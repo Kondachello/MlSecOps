@@ -1,0 +1,82 @@
+# Безопасная MLOps-платформа — базовый стенд (Шаги 1-3).
+# Запуск:  docker compose -f infra/docker-compose.yml up --build
+# UI:      http://localhost:8501      (история событий)
+# MinIO:   http://localhost:9001      (логин/пароль из .env)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mlsec-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PG_USER:-mlsecops}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-mlsecops}
+      POSTGRES_DB: ${PG_DATABASE:-mlsecops}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      # init.sql выполняется автоматически при первом старте пустой БД (Шаг 2)
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-mlsecops}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: mlsec-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web-консоль
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: mlsec-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Шаг 3: UI, который показывает таблицу events.
+  ui:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.ui
+    container_name: mlsec-ui
+    restart: unless-stopped
+    environment:
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_USER: ${PG_USER:-mlsecops}
+      PG_PASSWORD: ${PG_PASSWORD:-mlsecops}
+      PG_DATABASE: ${PG_DATABASE:-mlsecops}
+    ports:
+      - "8501:8501"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pg_data:
+  minio_data:
+  redis_data:

@@ -1,0 +1,55 @@
+# GitHub Actions — стартовый пайплайн (проверка, что каркас работает).
+# Запускается автоматически на push и pull_request, плюс вручную (workflow_dispatch).
+# Дальше сюда добавятся Security Gates (G1..G7) отдельными job'ами.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:        # ручной запуск кнопкой "Run workflow"
+
+jobs:
+  # --- Статическая проверка: компилируется ли код ---
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m py_compile core/db.py ui/app.py tests/smoke_db.py
+      - run: echo "syntax OK"
+
+  # --- Smoke-тест контура БД: Postgres как service + init.sql + log_event ---
+  db-smoke:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mlsecops
+          POSTGRES_PASSWORD: mlsecops
+          POSTGRES_DB: mlsecops
+        ports:
+          - 5432:5432
+        # ждём, пока postgres будет готов принимать соединения
+        options: >-
+          --health-cmd "pg_isready -U mlsecops"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      # core/db.py читает эти переменные; service проброшен на localhost раннера
+      PG_HOST: localhost
+      PG_PORT: "5432"
+      PG_USER: mlsecops
+      PG_PASSWORD: mlsecops
+      PG_DATABASE: mlsecops
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install --no-cache-dir psycopg2-binary==2.9.9
+      - run: python tests/smoke_db.py
