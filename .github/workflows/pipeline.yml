@@ -54,7 +54,7 @@ jobs:
         with:
           context: ./my_gate
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/my-gate:latest
+          tags: ghcr.io/${{ github.repository_owner | lower }}/my-gate:latest
 
   # ── ПРИМЕР 1, шаг 2 ──────────────────────────────────
   # Запускает кастомный образ который только что собрали
@@ -62,7 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-my-image
     container:
-      image: ghcr.io/${{ github.repository_owner }}/my-gate:latest
+      image: ghcr.io/${{ github.repository_owner | lower }}/my-gate:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
