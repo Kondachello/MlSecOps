@@ -1,0 +1,4 @@
+# G1 Data Gate — минимальный тулчейн (изоляция образа)
+pandas
+pyarrow
+# presidio-analyzer  # опц.: расширенный поиск PII

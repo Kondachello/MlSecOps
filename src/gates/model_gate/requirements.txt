@@ -1,0 +1,3 @@
+# G4 Model Gate — сканер артефактов (бинарь cosign ставится в Dockerfile)
+modelscan
+# picklescan  # альтернатива/дополнение

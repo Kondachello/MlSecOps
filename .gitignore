@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Env / secrets (НИКОГДА не коммитим)
+.env
+*.key
+*.pem
+cosign.key
+
+# Data artifacts (демо-датасеты генерируются скриптом)
+data/*.csv
+data/*.parquet
+
+# Local tooling
+.idea/
+.DS_Store
+mlruns/

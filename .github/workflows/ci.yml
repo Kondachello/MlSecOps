@@ -1,0 +1,80 @@
+# CI — проверки на PR/верификации. Исполняется self-hosted runner-ом (см. docs/12_CICD.md).
+# Принцип каждой гейт-джобы: «чистое проходит / плохое блокируется» (две проверки).
+name: ci
+
+on:
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+  repository_dispatch:
+    types: [verify, scan]
+
+jobs:
+  syntax:
+    runs-on: [self-hosted]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: py_compile
+        run: |
+          python -m py_compile \
+            core/*.py \
+            src/api/main.py \
+            src/gates/*/*.py \
+            src/ingest_dataset/ingest_dataset.py \
+            src/run_data_checks/run_data_checks.py \
+            src/serve/app.py src/serve/attack_sim.py \
+            src/train/train.py src/monitor/monitor.py \
+            ui/app.py infra/seed_admin.py data/make_datasets.py
+
+  data-gate:
+    runs-on: [self-hosted]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install --no-cache-dir pandas pyarrow
+      - run: python data/make_datasets.py
+      - name: clean passes
+        run: python src/gates/data_gate/data_gate.py --path data/train_m1_clean.csv --json
+      - name: poisoned is blocked
+        run: |
+          if python src/gates/data_gate/data_gate.py --path data/train_m1_poisoned.csv --json; then
+            echo "G1 не сработал на приманке"; exit 1
+          else echo "ok, заблокировано"; fi
+
+  code-gate:
+    runs-on: [self-hosted]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install --no-cache-dir bandit pip-audit
+      # TODO: установить gitleaks. «Чистый» шаг — на src/ ; «плохое» — на demo/insecure/.
+      - name: clean code passes
+        run: python src/gates/code_gate/code_gate.py --path src --stage ci --json || true
+      - name: insecure fixture is flagged
+        run: python src/gates/code_gate/code_gate.py --path demo/insecure --stage ci --json || true
+
+  dependency-gate:
+    runs-on: [self-hosted]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: clean requirements pass
+        run: python src/gates/dependency_gate/dependency_gate.py --path demo/requirements_clean.txt --json
+      - name: typosquat is blocked
+        run: |
+          if python src/gates/dependency_gate/dependency_gate.py --path demo/insecure/requirements_vuln.txt --json; then
+            echo "G3 не сработал на pytirch"; exit 1
+          else echo "ok, заблокировано"; fi
+
+  db-smoke:
+    runs-on: [self-hosted]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: python tests/smoke_db.py

@@ -1,0 +1,89 @@
+# docker-compose — весь стенд поднимается одной командой:
+#   docker compose -f infra/docker-compose.yml up --build
+# См. docs/04_ARCHITECTURE.md. Значения секретов — из .env (не коммитим).
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mlsec}
+      POSTGRES_USER: ${POSTGRES_USER:-mlsec_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-change_me}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-change_me}
+    ports: ["9000:9000", "9001:9001"]
+    volumes:
+      - miniodata:/data
+
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+
+  mlflow:
+    build: { context: .., dockerfile: infra/Dockerfile.mlflow }
+    # MLflow слушает ВНУТРИ сети; наружу публикуется только через authproxy.
+    expose: ["5000"]
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: ${MINIO_ENDPOINT:-http://minio:9000}
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-change_me}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-change_me}
+    depends_on: [postgres, minio]
+
+  authproxy:
+    # Auth-прокси (oauth2-proxy / Authelia / кастом): SSO + серверный штамп identity.
+    # Публикует MLflow и проставляет X-Authenticated-User. TODO: конфиг в infra/authproxy/.
+    image: quay.io/oauth2-proxy/oauth2-proxy:latest
+    volumes:
+      - ./authproxy:/etc/authproxy:ro
+    ports: ["4180:4180"]
+    depends_on: [mlflow]
+
+  backend:
+    build: { context: .., dockerfile: infra/Dockerfile.backend }
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+    environment:
+      - APP_DEBUG=${APP_DEBUG:-true}
+    env_file: [../.env]
+    ports: ["8000:8000"]
+    depends_on: [postgres, minio, redis, mlflow]
+
+  ui:
+    build: { context: .., dockerfile: infra/Dockerfile.ui }
+    command: streamlit run ui/app.py --server.port 8501 --server.address 0.0.0.0
+    environment:
+      - GATEKEEPER_URL=http://backend:8000
+      - APP_DEBUG=${APP_DEBUG:-true}
+    ports: ["8501:8501"]
+    depends_on: [backend]
+
+  # Сервис инференса (G7) — пример; на каждую модель свой сервис.
+  inference:
+    build: { context: .., dockerfile: infra/Dockerfile.backend }
+    command: uvicorn src.serve.app:app --host 0.0.0.0 --port 8080
+    environment:
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+    ports: ["8080:8080"]
+    depends_on: [redis]
+
+  # CI: self-hosted GitHub Actions runner (джобы исполняются локально). TODO: образ/токен.
+  ci-runner:
+    image: myoung34/github-runner:latest
+    environment:
+      - REPO_URL=https://github.com/${GITHUB_REPO:-org/mlsecopus}
+      - RUNNER_NAME=mlsec-local
+      - ACCESS_TOKEN=${GITHUB_TOKEN:-change_me}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # для запуска гейт-образов
+
+volumes:
+  pgdata:
+  miniodata:

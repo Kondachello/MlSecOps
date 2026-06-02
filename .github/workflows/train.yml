@@ -1,0 +1,40 @@
+# train.yml — обучение модели В CI (канонический прод-артефакт). docs/12_CICD.md §train.
+# Порядок строгий: G2(ci) ПЕРВЫМ → обучение → G4 на CI-артефакте → register (alias=candidate).
+name: train
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_name:      { description: "имя модели",        required: true }
+      dataset_name:    { description: "датасет (name)",    required: true }
+      dataset_version: { description: "версия датасета",   required: true }
+      git_commit:      { description: "git SHA кода",      required: true }
+  repository_dispatch:
+    types: [train]
+
+jobs:
+  train:
+    runs-on: [self-hosted]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install --no-cache-dir -r requirements.txt
+
+      - name: "Step 1 — G2 Code Gate (ci) ПЕРВЫМ"
+        run: python src/gates/code_gate/code_gate.py --path . --stage ci --json
+
+      - name: "Step 2 — обучение в CI"
+        run: |
+          python src/train/train.py \
+            --git-commit "${{ github.event.inputs.git_commit }}" \
+            --dataset-name "${{ github.event.inputs.dataset_name }}" \
+            --dataset-version "${{ github.event.inputs.dataset_version }}" \
+            --data-source-type verified_id
+
+      - name: "Step 3 — G4 Model Gate на CI-артефакте"
+        run: python src/gates/model_gate/model_gate.py --path artifacts/model.safetensors --json
+        # TODO: путь к реальному артефакту, выданному train.py / MLflow
+
+      - name: "Step 4 — register (Postgres + MLflow, alias=candidate, trained_in_ci=true)"
+        run: echo "TODO: вызвать register через Gatekeeper API / core.db"

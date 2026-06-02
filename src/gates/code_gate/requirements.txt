@@ -1,0 +1,3 @@
+# G2 Code Gate — python-инструменты (бинарники gitleaks/trivy ставятся в Dockerfile)
+pip-audit
+bandit
