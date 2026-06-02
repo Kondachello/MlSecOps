@@ -1,9 +1,5 @@
-.env
+gate_findings/
 __pycache__/
 *.pyc
-.venv/
-venv/
-*.onnx
-*.safetensors
-*.pkl
-.DS_Store
+.env
+.claude

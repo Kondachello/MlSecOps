@@ -1,0 +1,71 @@
+name: MLSecOps Pipeline
+
+on:
+  push:
+    branches: ["**"]   # на любой пуш в любую ветку
+
+jobs:
+  # ── ПРИМЕР 2, шаг 1 ──────────────────────────────────
+  # Запускается в контейнере alpine, просто echo
+  job-echo:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:latest    # ← Docker-образ, как image: в GitLab
+    steps:
+      - name: Say hello
+        run: |
+          echo "Привет из Docker-контейнера alpine!"
+          echo "Ветка: $GITHUB_REF_NAME"
+          echo "Коммит: $GITHUB_SHA"
+
+  # ── ПРИМЕР 2, шаг 2 ──────────────────────────────────
+  # Запускается ТОЛЬКО после job-echo (needs:)
+  job-python:
+    runs-on: ubuntu-latest
+    needs: job-echo           # ← sequential, как следующий stage в GitLab
+    container:
+      image: python:3.11-slim
+    steps:
+      - name: Check Python
+        run: |
+          python --version
+          python -c "print('Python работает!')"
+
+  # ── ПРИМЕР 1, шаг 1 ──────────────────────────────────
+  # Собирает кастомный Docker-образ и пушит в GitHub Container Registry
+  build-my-image:
+    runs-on: ubuntu-latest
+    needs: job-python
+    permissions:
+      contents: read
+      packages: write         # нужно для push в ghcr.io
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}  # встроенный токен, ничего настраивать не надо
+
+      - name: Build and push custom image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./my_gate
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/my-gate:latest
+
+  # ── ПРИМЕР 1, шаг 2 ──────────────────────────────────
+  # Запускает кастомный образ который только что собрали
+  run-my-gate:
+    runs-on: ubuntu-latest
+    needs: build-my-image
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/my-gate:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Run gate
+        run: python /app/check.py

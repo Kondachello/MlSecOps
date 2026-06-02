@@ -1,0 +1,23 @@
+stages:
+  - build-image
+  - run-gate
+
+build-my-image:
+  stage: build-image
+  image: docker:26
+  services:
+    - docker:26-dind          # Docker-inside-Docker, нужен чтобы build работал в CI
+  variables:
+    IMAGE: $CI_REGISTRY_IMAGE/my-gate:latest
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker build -t $IMAGE ./my_gate
+    - docker push $IMAGE       # пушит в GitLab Container Registry (бесплатно, встроен)
+
+run-my-gate:
+  stage: run-gate
+  image: $CI_REGISTRY_IMAGE/my-gate:latest   # использует только что собранный образ
+  script:
+    - python /app/check.py
+    
