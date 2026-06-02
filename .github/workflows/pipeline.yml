@@ -39,6 +39,8 @@ jobs:
     permissions:
       contents: read
       packages: write         # нужно для push в ghcr.io
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -49,12 +51,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}  # встроенный токен, ничего настраивать не надо
 
+      - name: Compute lowercase image tag
+        id: meta
+        run: |
+          echo "image_tag=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/my-gate:latest" >> $GITHUB_OUTPUT
+
       - name: Build and push custom image
         uses: docker/build-push-action@v5
         with:
           context: ./my_gate
           push: true
-          tags: ghcr.io/${{ github.repository_owner | lower }}/my-gate:latest
+          tags: ${{ steps.meta.outputs.image_tag }}
 
   # ── ПРИМЕР 1, шаг 2 ──────────────────────────────────
   # Запускает кастомный образ который только что собрали
@@ -62,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-my-image
     container:
-      image: ghcr.io/${{ github.repository_owner | lower }}/my-gate:latest
+      image: ${{ needs.build-my-image.outputs.image_tag }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
