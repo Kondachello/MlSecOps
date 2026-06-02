@@ -18,8 +18,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: python -m py_compile core/db.py ui/app.py tests/smoke_db.py
+      - run: python -m py_compile core/db.py core/storage.py core/model_card.py ui/app.py tests/smoke_db.py src/gates/data_gate.py src/ingest_dataset.py
       - run: echo "syntax OK"
+
+  # --- G1 Data Gate: чистый датасет проходит, отравленный блокируется ---
+  data-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install --no-cache-dir pandas
+      # чистый датасет ДОЛЖЕН пройти (exit 0)
+      - name: clean dataset passes
+        run: python src/gates/data_gate.py data/datasets/train_clean.csv --expected-cols amount,age,target
+      # отравленный ДОЛЖЕН заблокироваться (exit != 0) — иначе job падает
+      - name: poisoned dataset is blocked
+        run: |
+          if python src/gates/data_gate.py data/datasets/train_poisoned.csv --expected-cols amount,age,target; then
+            echo "❌ G1 не заблокировал отравленный датасет"; exit 1
+          else
+            echo "✅ G1 корректно заблокировал отравленный датасет"
+          fi
 
   # --- Smoke-тест контура БД: Postgres как service + init.sql + log_event ---
   db-smoke:

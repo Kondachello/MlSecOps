@@ -128,3 +128,129 @@ def verify_chain() -> tuple[bool, int | None]:
                     return False, r["id"]
                 prev = r["row_hash"]
     return True, None
+
+
+# ============================================================
+# Реестр датасетов и находки сканеров (Шаг 4)
+# ============================================================
+def register_dataset(name: str, version: str, *, sha256: str | None = None,
+                     location: str | None = None, created_by: str | None = None) -> int:
+    """Зарегистрировать датасет (status=registered). Идемпотентно по (name, version)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO datasets (name, version, sha256, location, created_by, status)
+            VALUES (%s, %s, %s, %s, %s, 'registered')
+            ON CONFLICT (name, version)
+            DO UPDATE SET sha256 = EXCLUDED.sha256, location = EXCLUDED.location
+            RETURNING id;
+            """,
+            (name, version, sha256, location, created_by),
+        )
+        return cur.fetchone()[0]
+
+
+def set_dataset_status(name: str, version: str, status: str) -> None:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE datasets SET status = %s WHERE name = %s AND version = %s;",
+            (status, name, version),
+        )
+
+
+def add_finding(gate: str, asset_type: str, asset_name: str, *,
+                severity: str, rule: str, evidence: dict[str, Any]) -> int:
+    """Записать сработку гейта (для UI: причина блока / False Positives)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO findings (gate, asset_type, asset_name, severity, rule, evidence)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id;
+            """,
+            (gate, asset_type, asset_name, severity, rule,
+             json.dumps(evidence, ensure_ascii=False)),
+        )
+        return cur.fetchone()[0]
+
+
+def fetch_datasets(limit: int = 200) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, name, version, status, sha256, location, created_by, created_at "
+                "FROM datasets ORDER BY id DESC LIMIT %s;",
+                (limit,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def fetch_findings(limit: int = 200, asset_name: str | None = None) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if asset_name:
+                cur.execute(
+                    "SELECT id, ts, gate, asset_type, asset_name, severity, rule, "
+                    "evidence, status FROM findings WHERE asset_name = %s "
+                    "ORDER BY id DESC LIMIT %s;",
+                    (asset_name, limit),
+                )
+            else:
+                cur.execute(
+                    "SELECT id, ts, gate, asset_type, asset_name, severity, rule, "
+                    "evidence, status FROM findings ORDER BY id DESC LIMIT %s;",
+                    (limit,),
+                )
+            return [dict(r) for r in cur.fetchall()]
+
+
+# ============================================================
+# Реестр моделей + паспорт (G0). card хранится как JSONB.
+# ============================================================
+def apply_migrations() -> None:
+    """Идемпотентные миграции для уже существующих БД (volume не пересоздаётся)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "ALTER TABLE models ADD COLUMN IF NOT EXISTS card JSONB "
+            "NOT NULL DEFAULT '{}'::jsonb;"
+        )
+
+
+def register_model(card: dict[str, Any], *, sha256: str | None = None,
+                   location: str | None = None, status: str = "registered",
+                   dataset_version: str | None = None,
+                   git_commit: str | None = None) -> int:
+    """Зарегистрировать модель из паспорта (G0). Идемпотентно по (name, version)."""
+    apply_migrations()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO models
+                (name, version, tier, owner, sha256, location, status,
+                 dataset_version, git_commit, card)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (name, version) DO UPDATE SET
+                tier = EXCLUDED.tier, owner = EXCLUDED.owner,
+                card = EXCLUDED.card, sha256 = COALESCE(EXCLUDED.sha256, models.sha256),
+                location = COALESCE(EXCLUDED.location, models.location)
+            RETURNING id;
+            """,
+            (card["name"], card["version"], card.get("tier", "HIGH"),
+             card.get("owner"), sha256, location, status,
+             dataset_version, git_commit,
+             json.dumps(card, ensure_ascii=False)),
+        )
+        return cur.fetchone()[0]
+
+
+def fetch_models(limit: int = 200) -> list[dict[str, Any]]:
+    apply_migrations()
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, name, version, tier, owner, status, sha256, "
+                "dataset_version, card, created_at "
+                "FROM models ORDER BY id DESC LIMIT %s;",
+                (limit,),
+            )
+            return [dict(r) for r in cur.fetchall()]

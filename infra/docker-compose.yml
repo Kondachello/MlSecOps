@@ -70,10 +70,16 @@ services:
       PG_USER: ${PG_USER:-mlsecops}
       PG_PASSWORD: ${PG_PASSWORD:-mlsecops}
       PG_DATABASE: ${PG_DATABASE:-mlsecops}
+      # MinIO для quarantine/datasets/models bucket'ов
+      MINIO_ENDPOINT: minio:9000
+      MINIO_USER: ${MINIO_USER:-minioadmin}
+      MINIO_PASSWORD: ${MINIO_PASSWORD:-minioadmin}
     ports:
       - "8501:8501"
     depends_on:
       postgres:
+        condition: service_healthy
+      minio:
         condition: service_healthy
 
 volumes:

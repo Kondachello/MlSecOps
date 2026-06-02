@@ -4,3 +4,8 @@ lightgbm
 catboost
 transformers
 onnx
+# платформа / гейты / хранилище
+psycopg2-binary
+pydantic
+PyYAML
+boto3

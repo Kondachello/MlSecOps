@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS models (
     dataset_version TEXT,                          -- lineage: на каком датасете
     git_commit      TEXT,                          -- lineage: каким кодом
     approved_by     TEXT,                          -- кто нажал Approve (только MLSecOps)
+    card            JSONB       NOT NULL DEFAULT '{}'::jsonb,  -- полный model_card (G0)
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (name, version),
     CHECK (tier IN ('LOW', 'MED', 'HIGH'))
