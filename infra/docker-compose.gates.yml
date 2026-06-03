@@ -1,6 +1,27 @@
-# Образы гейтов (G1–G5) собираются одной командой из корня репо:
+# Сборка образов гейтов (команда из корня alfa_case_2):
 #
-#   bash scripts/ci/build_all_gates.sh
+#   docker compose -f infra/docker-compose.gates.yml build
 #
-# Отдельные сервисы здесь не нужны — гейты в CI пока запускаются через python,
-# Docker-образы понадобятся на этапе 1 (job build-gates).
+# Тест G1 после сборки (PowerShell):
+#   .\scripts\ci\run_gate_docker.ps1 -Gate data -HostPath data\train_m1_clean.csv
+
+services:
+  gate-data:
+    build: ../src/gates/data_gate
+    image: mlsec-gate-data
+
+  gate-code:
+    build: ../src/gates/code_gate
+    image: mlsec-gate-code
+
+  gate-dependency:
+    build: ../src/gates/dependency_gate
+    image: mlsec-gate-dependency
+
+  gate-model:
+    build: ../src/gates/model_gate
+    image: mlsec-gate-model
+
+  gate-registry:
+    build: ../src/gates/registry_gate
+    image: mlsec-gate-registry

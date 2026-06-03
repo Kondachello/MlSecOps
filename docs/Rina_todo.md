@@ -149,15 +149,14 @@ docker images
 
 ## 0.5 — Runner в `infra/docker-compose.yml` (согласовать с инфра)
 
-- [ ] В `.env` добавить (не коммитить секреты):
-  - `GITHUB_REPO=org/repo`
-  - `GITHUB_TOKEN=<PAT с repo + workflow>`
-  - `RUNNER_NAME=mlsec-local`
-- [ ] Поднять runner:
-  ```bash
-  docker compose -f infra/docker-compose.yml up -d ci-runner
-  ```
-- [ ] В GitHub → Settings → Actions → Runners: статус **Idle** (self-hosted).
+- [x] В `.env` (не коммитить): `GITHUB_REPO`, `GITHUB_TOKEN`, **`REPO_URL`**, **`ACCESS_TOKEN`** (= тот же PAT), `RUNNER_NAME`
+  - Важно: `myoung34/github-runner` читает `REPO_URL`/`ACCESS_TOKEN` из `env_file`, не из `${GITHUB_*}` в compose (иначе подставляется `change_me`).
+- [x] Поднять runner: `docker compose -f infra/docker-compose.yml up -d ci-runner`
+- [ ] В GitHub → Settings → Actions → Runners: статус **Idle**
+  - Если в логах `curl … 403` / `Invalid configuration provided for token`: PAT без прав на registration-token.
+  - **Classic PAT:** scope `repo` (полный доступ к private repo) + `workflow`.
+  - **Fine-grained PAT:** Repository access = `Kondachello/MlSecOps`, Permission **Administration** = Read and write.
+  - Альтернатива: Settings → Actions → Runners → New → скопировать одноразовый token → `RUNNER_TOKEN=...` в `.env` (короткоживущий).
 
 **Коллегам (инфра/лид):**  
 «Нужен PAT для runner и label `self-hosted`. Репозиторий: `<url>`. Без runner workflow зависнут в queued».
@@ -169,7 +168,7 @@ docker images
 ## 0.6 — `.env.example`
 
 - [x] Добавлены `RUNNER_NAME`, `GATEKEEPER_URL`, `USE_GATEKEEPER`, `CI_SKIP_PREFLIGHT`, комментарии cosign
-- [ ] **Ты:** `cp .env.example .env` и подставить `GITHUB_REPO` / `GITHUB_TOKEN` (см. 0.5)
+- [x] **Ты:** `.env` создан (`REPO_URL`, `ACCESS_TOKEN`, `RUNNER_NAME` — см. 0.5)
 
 **Коллегам (бэк):** «Какие URL внутри docker-сети для postgres/mlflow с runner?»
 

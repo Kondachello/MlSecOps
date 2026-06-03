@@ -74,16 +74,17 @@ services:
     ports: ["8080:8080"]
     depends_on: [redis]
 
-  # CI: self-hosted runner (label в workflow: self-hosted). Нужны GITHUB_REPO + GITHUB_TOKEN в .env
+  # CI: self-hosted runner. Переменные REPO_URL, ACCESS_TOKEN, RUNNER_NAME — только через env_file
+  # (compose подставляет ${...} из infra/.env, не из ../.env — не дублировать их в environment:)
   ci-runner:
     image: myoung34/github-runner:latest
     env_file: [../.env]
     environment:
-      REPO_URL: https://github.com/${GITHUB_REPO:-org/mlsecopus}
-      RUNNER_NAME: ${RUNNER_NAME:-mlsec-local}
-      ACCESS_TOKEN: ${GITHUB_TOKEN:-change_me}
+      RUNNER_SCOPE: repo
+      LABELS: self-hosted
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
 
 volumes:
   pgdata:
