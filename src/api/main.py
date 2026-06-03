@@ -1,8 +1,10 @@
 """Gatekeeper — FastAPI бэкенд. Единая точка: deep audit, реестр, RBAC, триггер CI.
 
 Эндпоинты и контракт /verify — docs/11_BACKEND_API.md.
-Личность — из auth-прокси (identity.current_user). Привилегии — require_role.
-Скелет: маршруты объявлены, логика помечена TODO.
+Личность — из JWT (core.identity.current_user). Привилегии — require_role.
+
+Auth-модель (локальный JWT-issuer, docs/06): саморегистрация без роли → MLSecOps
+выдаёт роль → один и тот же JWT действителен и для нашего API, и (через прокси) для MLflow.
 """
 from __future__ import annotations
 
@@ -24,9 +26,15 @@ try:
 except Exception:
     _http = None  # type: ignore
 
+from core import db, identity
+
 app = FastAPI(title="MLSecOps Gatekeeper") if FastAPI else None
 
+if app:
+    db.init_db()  # SQLite-дев: создать схему (в Postgres — no-op, схема из init.sql)
 
+
+# ---- модели запросов --------------------------------------------------------
 class VerifyRequest(BaseModel):
     model_name: str
     run_id: str
@@ -40,14 +48,115 @@ class TriggerWorkflowRequest(BaseModel):
     target: str = "data/train_m1_clean.csv"
 
 
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    email: Optional[str] = None
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class CreateUserRequest(BaseModel):
+    username: str
+    password: str
+    email: Optional[str] = None
+    roles: list[str] = []
+
+
+class AssignRoleRequest(BaseModel):
+    username: str
+    role: str
+
+
+class GrantAccessRequest(BaseModel):
+    username: str
+    dataset_name: str
+    dataset_version: str
+    can_export: bool = False
+
+
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "")
 GITHUB_REF = os.getenv("GITHUB_REF", "sasha")
 UPLOAD_DIR = Path(__file__).resolve().parents[2] / "data"
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://authproxy:4180/mlflow")
 
 
-# ---- видимость / выпадашки ----
+# ---- RBAC-хелперы (мапинг AuthError → HTTP + событие) -----------------------
+def _require(request, role: str) -> str:
+    """Требовать роль. 401 если нет личности, 403 (+event access_denied) если нет роли."""
+    try:
+        username = identity.current_user(request)
+    except identity.AuthError as e:
+        raise HTTPException(401, str(e))
+    roles = identity.get_roles(username)
+    if role not in roles:
+        db.log_event(username, sorted(roles)[0] if roles else "none", "access_denied",
+                     result="blocked", reason=f"need role {role}",
+                     details={"required_role": role})
+        raise HTTPException(403, f"user '{username}' lacks role '{role}'")
+    return username
+
+
 if app:
+    # ======================= AUTH (регистрация / логин) =======================
+    @app.post("/api/v1/auth/register")
+    def auth_register(req: RegisterRequest):
+        """Саморегистрация: создаёт юзера БЕЗ роли. Роль потом выдаёт MLSecOps."""
+        if db.get_user(req.username):
+            raise HTTPException(409, "username already taken")
+        uid = db.register_user(req.username, req.email,
+                               password_hash=identity.hash_password(req.password))
+        db.log_event(req.username, "none", "user_registered", asset=req.username,
+                     result="ok", reason="self-registration (no role yet)")
+        return {"status": "ok", "user_id": uid, "username": req.username,
+                "roles": [], "note": "ожидайте назначения роли от MLSecOps"}
+
+    @app.post("/api/v1/auth/login")
+    def auth_login(req: LoginRequest):
+        """Логин по паролю → JWT (действителен для API и MLflow через прокси)."""
+        try:
+            info = identity.authenticate(req.username, req.password)
+        except identity.AuthError:
+            raise HTTPException(401, "invalid username or password")
+        token = identity.create_token(info["username"], info["roles"])
+        db.log_event(req.username, sorted(info["roles"])[0] if info["roles"] else "none",
+                     "login", result="ok")
+        return {"access_token": token, "token_type": "bearer", "roles": info["roles"]}
+
+    @app.get("/api/v1/auth/me")
+    def auth_me(request: Request):
+        """Кто я: личность из токена + актуальные роли из БД."""
+        try:
+            username = identity.current_user(request)
+        except identity.AuthError as e:
+            raise HTTPException(401, str(e))
+        return {"username": username, "roles": sorted(identity.get_roles(username))}
+
+    @app.post("/api/v1/auth/token")
+    def auth_token(request: Request):
+        """Выдать свежий токен для MLflow SDK + подсказку по настройке (нужен Bearer)."""
+        try:
+            username = identity.current_user(request)
+        except identity.AuthError as e:
+            raise HTTPException(401, str(e))
+        roles = sorted(identity.get_roles(username))
+        token = identity.create_token(username, roles)
+        return {
+            "access_token": token,
+            "mlflow_tracking_uri": MLFLOW_TRACKING_URI,
+            "usage": (
+                "import os, mlflow\n"
+                f'os.environ["MLFLOW_TRACKING_URI"] = "{MLFLOW_TRACKING_URI}"\n'
+                f'os.environ["MLFLOW_TRACKING_TOKEN"] = "{token}"\n'
+                'mlflow.set_experiment("my_experiment")'
+            ),
+        }
+
+    # ---- видимость / выпадашки ----
     @app.get("/api/v1/models")
     def list_models():
         """Список моделей из MLflow + реестр (для выпадашек). TODO: mlflow_utils.list_models()."""
@@ -201,25 +310,135 @@ if app:
         return {"findings": []}  # TODO
 
     @app.get("/api/v1/events")
-    def events():
-        return {"events": []}  # TODO
+    def events(limit: int = 100):
+        """История событий (Audit Trail, новые сверху)."""
+        return {"events": db.list_events(limit)}
 
     @app.get("/api/v1/registry")
     def registry():
         return {"models": [], "datasets": []}  # TODO
 
-    # ---- админка RBAC ----
+    # ======================= админка RBAC (MLSecOps) =======================
     @app.post("/api/v1/admin/users")
-    def admin_users(request: Request):
-        """Регистрация пользователя. RBAC: MLSecOps. TODO."""
-        return {"status": "TODO"}
+    def admin_users(req: CreateUserRequest, request: Request):
+        """Создать пользователя (+опц. роли). RBAC: MLSecOps."""
+        admin = _require(request, "MLSecOps")
+        if db.get_user(req.username):
+            raise HTTPException(409, "username already taken")
+        uid = db.register_user(req.username, req.email,
+                               password_hash=identity.hash_password(req.password))
+        db.log_event(admin, "MLSecOps", "user_created", asset=req.username, result="ok",
+                     reason="создан админом")
+        for role in req.roles:
+            if role not in identity.ROLES:
+                raise HTTPException(400, f"unknown role {role}")
+            db.assign_role(uid, role)
+            db.log_event(admin, "MLSecOps", "role_assigned", asset=req.username, result="ok",
+                         reason=f"выдана роль {role}", details={"role": role})
+        return {"status": "ok", "user_id": uid, "username": req.username,
+                "roles": sorted(identity.get_roles(req.username))}
 
     @app.post("/api/v1/admin/roles")
-    def admin_roles(request: Request):
-        """Назначение роли. RBAC: MLSecOps. TODO."""
-        return {"status": "TODO"}
+    def admin_roles(req: AssignRoleRequest, request: Request):
+        """Назначить роль пользователю. RBAC: MLSecOps."""
+        admin = _require(request, "MLSecOps")
+        if req.role not in identity.ROLES:
+            raise HTTPException(400, f"unknown role {req.role}")
+        user = db.get_user(req.username)
+        if not user:
+            raise HTTPException(404, "user not found")
+        db.assign_role(user["id"], req.role)
+        db.log_event(admin, "MLSecOps", "role_assigned", asset=req.username, result="ok",
+                     reason=f"выдана роль {req.role}", details={"role": req.role})
+        return {"status": "ok", "username": req.username,
+                "roles": sorted(identity.get_roles(req.username))}
 
     @app.post("/api/v1/admin/access")
-    def admin_access(request: Request):
-        """Выдача доступа к датасету (+can_export). RBAC: MLSecOps. TODO."""
-        return {"status": "TODO"}
+    def admin_access(req: GrantAccessRequest, request: Request):
+        """Выдать доступ к датасету (+can_export). RBAC: MLSecOps."""
+        admin = _require(request, "MLSecOps")
+        user = db.get_user(req.username)
+        if not user:
+            raise HTTPException(404, "user not found")
+        db.grant_access(user["id"], req.dataset_name, req.dataset_version,
+                        can_export=req.can_export, granted_by=admin)
+        db.log_event(admin, "MLSecOps", "access_granted",
+                     asset=f"{req.dataset_name}@{req.dataset_version}", result="ok",
+                     reason=f"доступ для {req.username}",
+                     details={"user": req.username, "can_export": req.can_export})
+        return {"status": "ok", "user": req.username,
+                "dataset": f"{req.dataset_name}@{req.dataset_version}",
+                "can_export": req.can_export}
+
+    @app.get("/api/v1/admin/users")
+    def admin_list_users(request: Request):
+        """Список пользователей с ролями. RBAC: MLSecOps."""
+        _require(request, "MLSecOps")
+        return {"users": db.list_users()}
+
+
+# ======================= демо/самопроверка (TestClient) =======================
+if __name__ == "__main__":
+    import tempfile
+
+    db.SQLITE_PATH = str(Path(tempfile.gettempdir()) / "mlsec_api_demo.db")
+    if Path(db.SQLITE_PATH).exists():
+        Path(db.SQLITE_PATH).unlink()
+    db.init_db()
+
+    # Сид первого MLSecOps-админа (как infra/seed_admin.py)
+    admin_uid = db.register_user("msecops", "msecops@example.com",
+                                 password_hash=identity.hash_password("admin-pass"))
+    db.assign_role(admin_uid, "MLSecOps")
+
+    from fastapi.testclient import TestClient
+    c = TestClient(app)
+
+    def show(title, r):
+        print(f"{title}\n   -> {r.status_code} {r.json()}")
+
+    print("=== Поток регистрации и выдачи роли ===\n")
+
+    # 1) Саморегистрация DS (без роли)
+    show("1) POST /auth/register (ivanov)",
+         c.post("/api/v1/auth/register",
+                json={"username": "ivanov", "password": "hunter2", "email": "i@ex.com"}))
+
+    # 2) Логин ivanov → токен
+    r = c.post("/api/v1/auth/login", json={"username": "ivanov", "password": "hunter2"})
+    show("2) POST /auth/login (ivanov)", r)
+    ivanov_tok = r.json()["access_token"]
+    ivanov_h = {"Authorization": f"Bearer {ivanov_tok}"}
+
+    # 3) /me — ролей пока нет
+    show("3) GET /auth/me (ivanov, без роли)", c.get("/api/v1/auth/me", headers=ivanov_h))
+
+    # 4) ivanov пытается в админку → 403
+    show("4) POST /admin/roles от ivanov (ожидаем 403)",
+         c.post("/api/v1/admin/roles", headers=ivanov_h,
+                json={"username": "ivanov", "role": "DS"}))
+
+    # 5) Логин админа → токен
+    r = c.post("/api/v1/auth/login", json={"username": "msecops", "password": "admin-pass"})
+    admin_h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    show("5) POST /auth/login (msecops)", r)
+
+    # 6) Админ выдаёт ivanov роль DS
+    show("6) POST /admin/roles (msecops выдаёт DS ivanov)",
+         c.post("/api/v1/admin/roles", headers=admin_h,
+                json={"username": "ivanov", "role": "DS"}))
+
+    # 7) /me ivanov — теперь DS
+    show("7) GET /auth/me (ivanov, после выдачи)", c.get("/api/v1/auth/me", headers=ivanov_h))
+
+    # 8) ivanov получает токен для MLflow SDK
+    r = c.post("/api/v1/auth/token", headers=ivanov_h)
+    print("\n8) POST /auth/token (ivanov) -> сниппет для ноутбука:")
+    print("   " + r.json()["usage"].replace("\n", "\n   "))
+
+    # 9) Аудит: что записалось в hash-chain
+    ev = c.get("/api/v1/events").json()["events"]
+    print(f"\n9) GET /events — записей: {len(ev)} (новые сверху)")
+    for e in ev:
+        print(f"   #{e['id']} {e['actor']}/{e['role']}: {e['action']} [{e['result']}] {e.get('reason') or ''}")
+    print(f"   verify_chain() = {db.verify_chain()}")

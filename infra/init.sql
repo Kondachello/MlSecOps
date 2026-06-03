@@ -90,10 +90,11 @@ CREATE TABLE IF NOT EXISTS findings (
 
 -- ───────────────────────── RBAC ─────────────────────────
 CREATE TABLE IF NOT EXISTS users (
-    id         BIGSERIAL PRIMARY KEY,
-    username   TEXT UNIQUE NOT NULL,
-    email      TEXT,
-    created_at TIMESTAMPTZ DEFAULT now()
+    id            BIGSERIAL PRIMARY KEY,
+    username      TEXT UNIQUE NOT NULL,    -- согласован с SSO/MLflow (логин)
+    email         TEXT,
+    password_hash TEXT,                    -- bcrypt-хэш (локальный JWT-issuer); NULL для чисто-SSO юзеров
+    created_at    TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS roles (

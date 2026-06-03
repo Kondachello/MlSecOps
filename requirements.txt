@@ -14,6 +14,11 @@ requests
 python-dotenv
 python-multipart
 
+# Auth / Identity (локальный JWT-issuer + хэш паролей)
+bcrypt
+python-jose[cryptography]
+httpx
+
 # UI
 streamlit
 
