@@ -123,14 +123,18 @@ if app:
         if req.check_type not in allowed:
             raise HTTPException(400, f"check_type must be one of {allowed}")
         resp = _http.post(
-            f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/scan.yml/dispatches",
+            f"https://api.github.com/repos/{GITHUB_REPO}/dispatches",
             headers={
                 "Authorization": f"Bearer {GITHUB_TOKEN}",
                 "Accept": "application/vnd.github.v3+json",
             },
             json={
-                "ref": GITHUB_REF,
-                "inputs": {"check_type": req.check_type, "target": req.target},
+                "event_type": "run-security-scan",
+                "client_payload": {
+                    "check_type": req.check_type,
+                    "target": req.target,
+                    "ref": GITHUB_REF,
+                },
             },
             timeout=10,
         )
