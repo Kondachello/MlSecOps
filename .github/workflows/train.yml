@@ -32,9 +32,9 @@ jobs:
             --dataset-version "${{ github.event.inputs.dataset_version }}" \
             --data-source-type verified_id
 
+      # TODO: Step 3 — путь к артефакту из train.py / MLflow
       - name: "Step 3 — G4 Model Gate на CI-артефакте"
         run: python src/gates/model_gate/model_gate.py --path artifacts/model.safetensors --json
-        # TODO: путь к реальному артефакту, выданному train.py / MLflow
 
       - name: "Step 4 — register (Postgres + MLflow, alias=candidate, trained_in_ci=true)"
-        run: echo "TODO: вызвать register через Gatekeeper API / core.db"
+        run: echo 'TODO register via Gatekeeper API / core.db'

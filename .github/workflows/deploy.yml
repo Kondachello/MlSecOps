@@ -20,20 +20,20 @@ jobs:
       - run: pip install --no-cache-dir -r requirements.txt
 
       - name: "HITL gate (Tier=HIGH требует approved_by)"
-        run: echo "TODO: проверить статус approved в реестре; если pending_hitl — стоп"
+        run: echo 'TODO check approved status in registry; stop if pending_hitl'
 
       - name: "G2 Code Gate (deploy: secrets+SAST+CVE)"
         run: python src/gates/code_gate/code_gate.py --path . --stage ci --json
 
       - name: "Build image + trivy (единственный запуск)"
-        run: echo "TODO: docker build → trivy image --severity CRITICAL,HIGH --exit-code 1"
+        run: echo 'TODO docker build and trivy image CRITICAL,HIGH exit-code 1'
 
       - name: "G4 Model Gate (SHA-сверка с реестром)"
         run: python src/gates/model_gate/model_gate.py --path artifacts/model.safetensors --expected-sha "$EXPECTED_SHA" --json
         env: { EXPECTED_SHA: "" }   # TODO: подставить из реестра
 
       - name: "cosign sign (артефакт + образ)"
-        run: echo "TODO: cosign sign (ключ — из GitHub Actions secrets, не в коде)"
+        run: echo 'TODO cosign sign using GitHub Actions secrets'
 
       - name: "Положить в models/prod/* (WORM) + проверка подписи/SHA перед docker run"
-        run: echo "TODO: upload+lock_prod; verify cosign + SHA; docker run; health-check; alias=production"
+        run: echo 'TODO upload lock_prod verify cosign SHA docker run health-check alias production'
