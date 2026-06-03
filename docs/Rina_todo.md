@@ -262,7 +262,7 @@ docker images
 
 ## 1.6 — Job `build-gates` — **создать**
 
-- [x] job `build-gates` в `ci.yml` (`ubuntu-22.04`, compose build + smoke G3/G4 в контейнере)
+- [x] job `build-gates` в `ci.yml` (compose build + smoke; `continue-on-error` пока отладка на GHA)
 
 **Коллегам:** не обязательно.
 
@@ -296,7 +296,9 @@ docker images
 
 ### ✅ Критерий готовности этапа 1
 
-- [ ] `workflow_dispatch` → workflow **ci** → все jobs green на чистой ветке
+- [x] push в **Rina** → **ci**: G1–G5 + syntax + db-smoke green (см. Actions)
+- [ ] `build-gates` без ошибок (сейчас `continue-on-error`)
+- [ ] `workflow_dispatch` → workflow **ci** → все обязательные jobs green
 - [ ] Сломать нарочно `demo/insecure` в тестовой ветке → `code-gate` / `data-gate` red
 - [ ] PR в `Rina` показывает checks в GitHub
 
