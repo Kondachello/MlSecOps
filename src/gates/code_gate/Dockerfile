@@ -3,7 +3,6 @@
 FROM python:3.11-slim
 
 ARG GITLEAKS_VERSION=8.18.4
-ARG TRIVY_VERSION=0.52.2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates \
@@ -15,12 +14,9 @@ RUN curl -sSfL \
     | tar -xz -C /usr/local/bin gitleaks \
     && chmod +x /usr/local/bin/gitleaks
 
-# trivy — используется ТОЛЬКО на стадии deploy (--stage deploy --image <image>)
-# Устанавливаем через официальный скрипт (apt-репо или прямой бинарь)
-RUN curl -sSfL \
-    "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
-    | tar -xz -C /usr/local/bin trivy \
-    && chmod +x /usr/local/bin/trivy
+# trivy не в CI-образе: tar релиза v0.52.2 на GHA давал 404; в ci.yml --stage ci trivy не нужен.
+# На deploy — trivy на runner / в deploy.yml (docs/12_CICD, Rina_todo этап 4).
+# code_gate при stage=deploy без trivy в PATH → check SKIP, не fail сборки образа.
 
 WORKDIR /app
 COPY requirements.txt .

@@ -1,7 +1,216 @@
 # Rina_todo — пошаговый чеклист CI/CD
 
 > Рабочий документ «по косточкам». Опирается на [`Rina_WOrk.md`](Rina_WOrk.md).  
-> Ветка для работы: **`Rina`**. Отмечай `[x]` по мере выполнения.
+> Ветка для работы: **`Rina`**. Отмечай `[x]` по мере выполнения.  
+> Ожидания от команды: [`Rina_expectations_checklist.md`](Rina_expectations_checklist.md).  
+> Как стыкуемся с бэком: [`Rina_do_befor_work.md`](Rina_do_befor_work.md).  
+> Канон продукта: [`05_CANONICAL_FLOW.md`](05_CANONICAL_FLOW.md).
+
+**Репозиторий:** [Kondachello/MlSecOps](https://github.com/Kondachello/MlSecOps) · **твоя ветка:** [Rina](https://github.com/Kondachello/MlSecOps/tree/Rina)
+
+---
+
+# СЕЙЧАС: где ты и что делать дальше (читай первым)
+
+## Карта веток — кто что сделал (чтобы не путаться)
+
+| Ветка | Кто | Что там | Твои действия |
+|-------|-----|---------|----------------|
+| **`Rina`** | **Ты** | CI (`ci.yml` G1–G5), `scripts/ci/`, гейты из Саши, `core/db.py` для журнала, push → Actions | **Работай только здесь.** Всё новое — коммит в `Rina`. |
+| **`sasha1`** | **Саша** | Исходный код гейтов G2–G5, фикстуры `demo/` | **Уже перенесено в `Rina`.** Не живёшь на `sasha1` — только смотреть при расхождениях. |
+| **`kolya_gh_api_test`** | **Коля** | Логин/JWT, `POST /api/v1/ci/trigger`, UI-сканер, `scan.yml` (`run-security-scan`) | **Не мержить целиком в `Rina`.** Ждёшь, пока Коля склеит API с **твоими** `event_type` (`verify`/`train`/`deploy`) и `ci.yml`. См. §5.4 ниже. |
+| **`main` / `sasha`** | Команда | Общая база | MR в `main` — **после этапа 6**, не сейчас. |
+
+**Как «работает сервис» сегодня (реальность):**
+
+1. Ты пушишь в **`Rina`** → GitHub сам гоняет **гейты** (роботы-проверки) → зелёный/красный CI. **Без сайта.**
+2. Сайт + полный бэкенд (кнопки → база → train) — **ещё собирают** (Коля начал вход и один триггер).
+3. Гейт **не пишет в БД** — только JSON; в базу должен писать **бэкенд** (`ingest_gate_report` — код уже в `core/db.py` на `Rina`).
+
+```mermaid
+flowchart TB
+  subgraph done [Уже работает на Rina]
+    Push[git push Rina] --> GHA[GitHub Actions ci.yml]
+    GHA --> G1[G1 data]
+    GHA --> G2[G2 code]
+    GHA --> G3[G3 deps]
+    GHA --> G4[G4 model]
+    GHA --> G5[G5 registry]
+  end
+  subgraph later [Потом — не твоя одиночная задача]
+    UI[Streamlit] --> BE[Gatekeeper API]
+    BE --> GHA
+    BE --> PG[(Postgres findings events)]
+  end
+```
+
+---
+
+## Твоя зона ответственности (одна фраза)
+
+**Ты — CI/CD:** гейты + workflows + скрипты `scripts/ci/` + артефакты отчётов для бэка.  
+**Не ты:** полный `src/api/main.py`, UI, MinIO, MLflow, RBAC в проде.
+
+---
+
+## На каком этапе ты стоишь
+
+| Этап | Статус | Что это значит |
+|------|--------|----------------|
+| **0** | ✅ DONE | Локально `check_local.ps1`, GitHub-hosted, push → `ci` |
+| **1** | 🟡 **~90%** — **закрыть сейчас** | G1–G5 в CI есть; осталось: артефакты JSON, `build-gates`, красный тест, PR checks |
+| **2** | ⏳ после 1 | Укрепить G5 lineage, `parse_report`, `artifacts/` |
+| **3** | ⏳ после 2 | `train.yml` end-to-end + preflight mock |
+| **4** | ⏳ после 3 | `deploy.yml` |
+| **5** | параллельно с 3–4 | Стыковка с Колей/бэком (dispatch, не дублировать БД из job) |
+| **6** | финал | Демо + MR в main |
+
+**Не начинай этап 3 (train)**, пока не закрыт чеклист §«Закрыть этап 1» ниже.
+
+---
+
+## Закрыть этап 1 (твой ближайший фокус, 2–4 дня)
+
+Делай **строго по порядку**. После каждого пункта — `git push origin Rina` и смотри [Actions → workflow **ci**](https://github.com/Kondachello/MlSecOps/actions).
+
+### День A — проверка «всё ещё зелёное»
+
+- [ ] **A1.** Убедиться, что ты на ветке `Rina`:
+  ```powershell
+  cd alfa_case_2
+  git checkout Rina
+  git pull origin Rina
+  ```
+- [ ] **A2.** Локально (5–10 мин):
+  ```powershell
+  .\scripts\ci\check_local.ps1
+  python -m py_compile src/gates/*/*.py
+  ```
+- [ ] **A3.** Открыть последний run **ci** на GitHub → все jobs **G1–G5 + syntax** зелёные (кроме `build-gates`, если он жёлтый из‑за `continue-on-error`).
+- [ ] **A4.** Отметить в этом файле: [ ] 1.2 «перепроверить в Actions», [ ] 1.3, [ ] 1.1 `py_compile`.
+
+### День B — артефакты для бэка (§1.8)
+
+Бэкенд потом заберёт JSON из Actions; тебе нужно **сохранять stdout гейта в файл**.
+
+- [ ] **B1.** В каждом gate-job в `.github/workflows/ci.yml` после шага гейта добавить, например:
+  ```yaml
+  - name: Save gate report
+    run: |
+      python src/gates/data_gate/data_gate.py --path data/train_m1_clean.csv --json > gate-G1-clean.json
+    # для FAIL-шагов — тот же паттерн с ожидаемым exit 1
+  - uses: actions/upload-artifact@v4
+    with:
+      name: gate-reports-${{ github.job }}
+      path: gate-*.json
+      if-no-files-found: warn
+  ```
+  (адаптировать под `data-gate`, `code-gate`, `dependency-gate`, `model-gate`, `registry-gate` — по одному JSON на job.)
+- [ ] **B2.** Push → в run скачать artifact → убедиться, что JSON совпадает с контрактом §«Контракт для коллег».
+- [ ] **B3.** Написать в чат бэку/Коле: «Артефакты `gate-reports-*` в workflow **ci**, ветка `Rina`».
+
+### День C — `build-gates` и честный красный CI
+
+- [x] **C1.** Лог **build-gates**: 404 на `trivy_0.52.2_Linux-64bit.tar.gz` в `gate-code` Dockerfile.
+- [x] **C2.** Исправление: trivy убран из CI-образа `gate-code`. После push — **build-gates** green → убрать `continue-on-error` в `ci.yml`.
+- [ ] **C3.** **Красный тест:** в отдельной ветке `Rina-test-fail` (не в основной `Rina`) нарочно сломать проверку:
+  - вариант 1: временно подставить poisoned CSV в шаг «clean passes» → `data-gate` red;
+  - вариант 2: добавить фейковый секрет в `src/` → `code-gate` red.
+  - Убедиться, что workflow **failed**. Ветку **не мержить** — только скрин для демо.
+- [ ] **C4.** `workflow_dispatch`: Actions → **ci** → Run workflow → все обязательные jobs green.
+
+### День D — база локально (опционально, не блокер CI)
+
+`core/db.py` на `Rina` уже с `log_event`, `ingest_gate_report`. В GHA Postgres нет → `CI_SKIP_DB_SMOKE=true` — **нормально**.
+
+- [ ] **D1.** Если Docker доступен:
+  ```powershell
+  docker compose -f infra/docker-compose.yml up -d postgres
+  pip install "psycopg[binary]"
+  $env:CI_SKIP_DB_SMOKE="false"
+  python tests/smoke_db.py
+  python infra/seed_admin.py
+  ```
+- [ ] **D2.** Если Docker нет — пропустить; в §1.7 оставить SKIP в GHA до появления `services: postgres` или compose-runner.
+
+### ✅ Этап 1 считается закрытым, когда
+
+- [x] push `Rina` → **ci**: G1–G5 + syntax green  
+- [ ] артефакты `gate-reports` в Actions  
+- [ ] есть скрин/ветка с **намеренно красным** gate-job  
+- [ ] `workflow_dispatch` **ci** green  
+- [ ] (желательно) `build-gates` решён или явно вынесен с пометкой в README CI  
+
+После этого переходи к **этапу 2** ниже.
+
+---
+
+## Ежедневный ритуал (каждый рабочий день, 15–30 мин)
+
+| # | Действие |
+|---|----------|
+| 1 | `git pull origin Rina` |
+| 2 | `.\scripts\ci\check_local.ps1` перед коммитом |
+| 3 | Коммит → `git push origin Rina` |
+| 4 | [GitHub Actions](https://github.com/Kondachello/MlSecOps/actions) → workflow **ci** → зелёный? |
+| 5 | Если правила гейта — сообщить в чат; если ломается CI — чинить **только** `Rina`, не чужие ветки |
+
+**Не делать каждый день:** merge `kolya_gh_api_test`, переписывать `src/api/main.py`, поднимать весь compose без задачи.
+
+---
+
+## Что НЕ делать сейчас (чтобы не расползтись)
+
+| Не делай | Почему |
+|----------|--------|
+| Мержить ветку Коли целиком в `Rina` | Сотрёт/сломает твой `ci.yml` и фикстуры; у него другой `event_type` (`run-security-scan`) |
+| Дописывать весь Gatekeeper API | Зона Коли/бэка; ты только контракт + артефакты |
+| Писать в Postgres из каждого CI job | Один источник правды — бэкенд; у тебя есть `scripts/ci/ingest_gate_to_db.sh` только для **локальной** отладки |
+| Стартовать **deploy** / cosign | Этап 4, после train |
+| Self-hosted runner | Решение команды: сейчас **ubuntu-22.04** GitHub-hosted |
+
+---
+
+## После этапа 1 — порядок на 2–3 недели
+
+| Неделя | Этап | Твои задачи (кратко) |
+|--------|------|----------------------|
+| 1 | **2** | `artifacts/.gitkeep`; G5 lineage + `test_registry_gate.sh`; `parse_report.py` exit 1 |
+| 2 | **3** | `preflight_train.sh` + mock; заглушка `train.py` → `.safetensors`; допилить `train.yml` (уже `ubuntu-22.04`); `post_register.sh` stub |
+| 3 | **4** | `preflight_deploy.sh`; deploy steps (trivy позже) |
+| параллельно | **5** | §5.4 — согласование с Колей; не трогать JSON гейта |
+
+---
+
+## §5.4 — Стыковка с веткой Коли (`kolya_gh_api_test`)
+
+**У Коли уже есть:** auth, `POST /api/v1/ci/trigger`, UI «сканер», dispatch `run-security-scan` → `scan.yml` (3 гейта).
+
+**У тебя уже есть:** полный **`ci.yml`** (G1–G5), `repository_dispatch` types `verify` / `scan` в `ci.yml`.
+
+**Договориться в чате (скопируй):**
+
+> Коля, беру из твоей ветки auth + `/ci/trigger`, но dispatch должен бить в **наш** `ci.yml` с `event_type`: `verify` / `scan` / `train` / `deploy` и payload как в `Rina_do_befor_work.md`. Твой `run-security-scan` не заменяет наш CI. После run — poll + `ingest_gate_report` на бэке. Я не мержу `kolya_gh_api_test` целиком — cherry-pick по согласованию.
+
+**Твоя роль в стыковке:** не менять формат JSON гейта; при необходимости добавить в `ci.yml` пример `client_payload` в комментарии; отдать артефакты `gate-reports`.
+
+---
+
+## Сообщения в чат (когда закрываешь этап 1)
+
+**Бэкенд / Коля:**
+
+> CI на ветке `Rina`: G1–G5 в GitHub Actions, JSON-контракт без изменений. Артефакты `gate-reports-*` в workflow ci. Нужен dispatch `verify`/`train`/`deploy` + poll run → `ingest_gate_report`. `core/db.py` на Rina готов для ingest — подключите из API.
+
+**ML:**
+
+> Train workflow ждёт `artifacts/model.safetensors` + SHA в stdout. Пока могу заглушку в `train.py` на Rina.
+
+**Все:**
+
+> Рабочая ветка CI — **Rina**. Не пушить ломающие изменения в пути гейтов без синка.
+
+---
 
 ---
 
@@ -194,7 +403,8 @@ docker images
 
 # ЭТАП 1 — Довести `ci.yml` (2–3 дня)
 
-**Цель:** на каждый push/PR — параллельные проверки G1–G5 + build-gates.  
+**Статус:** 🟡 почти готово — **детальный план закрытия → §«Закрыть этап 1» в начале файла.**  
+**Цель:** на каждый push/PR — параллельные проверки G1–G5 + (опц.) build-gates + артефакты JSON.  
 **Перенесено с [sasha1](https://github.com/Kondachello/MlSecOps/tree/sasha1):** гейты G2/G3/G4/G5, фикстуры, jobs в `ci.yml` (runner у нас `ubuntu-22.04`).  
 **Когда запускать:** push в `Rina` или Actions → **ci** → Run workflow.
 
@@ -262,7 +472,7 @@ docker images
 
 ## 1.6 — Job `build-gates` — **создать**
 
-- [x] job `build-gates` в `ci.yml` (compose build + smoke; `continue-on-error` пока отладка на GHA)
+- [x] job `build-gates` в `ci.yml` (compose build + smoke; `continue-on-error` убрать после зелёного build на GHA)
 
 **Коллегам:** не обязательно.
 
@@ -270,27 +480,23 @@ docker images
 
 ## 1.7 — Job `db-smoke`
 
-- [ ] Пока оставить как есть (скелет).
-- [ ] **Разблокировать**, когда бэк сделает `core/db.log_event` + `verify_chain`:
-  - добавить service postgres в job или `needs` от compose.
-  - убрать заглушку в `tests/smoke_db.py`.
+- [x] `core/db.py` на `Rina`: `log_event`, `verify_chain`, `ingest_gate_report` (для бэка, не из CI job).
+- [x] `tests/smoke_db.py` — реальный тест; в GHA: `CI_SKIP_DB_SMOKE=true` (нет Postgres в job).
+- [ ] **Ты (локально, опционально):** Docker postgres → `python tests/smoke_db.py` (см. §«День D» в начале файла).
+- [ ] **Позже (не блокер этапа 1):** в `ci.yml` добавить `services: postgres` + `CI_SKIP_DB_SMOKE=false`, либо оставить SKIP до compose-runner.
 
-**Коллегам (бэк):** «Напишите, когда `log_event` готов — подключу db-smoke в CI».
+**Коллегам (бэк):** «БД для ingest готова в `core/db`; в CI smoke пропущен без Postgres. Подключайте ingest из API».
 
 ---
 
-## 1.8 — Сохранение отчёта для бэка (подготовка)
+## 1.8 — Сохранение отчёта для бэка (подготовка) — **ПРИОРИТЕТ этапа 1**
 
-- [ ] В каждый gate-job добавить шаг:
-  ```yaml
-  - run: python scripts/ci/parse_report.py > gate-report-${{ gate }}.json
-  - uses: actions/upload-artifact@v4
-    with:
-      name: gate-reports
-      path: "*.json"
-  ```
+> Пошагово: §«День B» в начале файла.
 
-**Коллегам (бэк):** «Артефакты workflow `gate-reports` — формат до интеграции API».
+- [ ] В каждый gate-job: сохранить stdout `--json` в `gate-*.json` + `upload-artifact@v4`.
+- [ ] (Опц.) `parse_report.py` — краткий human-readable лог в step summary, не вместо JSON.
+
+**Коллегам (бэк):** «Артефакты workflow `gate-reports-*` — тот же JSON, что контракт §выше, до интеграции API».
 
 ---
 
@@ -413,7 +619,7 @@ python src/gates/model_gate/model_gate.py --path demo/models/bad.pkl --json
 | 8 | upload-artifact: `artifacts/`, `ci-train-report.json` |
 
 - [ ] Убрать все `echo TODO` по мере реализации.
-- [ ] `runs-on: [self-hosted]`
+- [x] `runs-on: ubuntu-22.04` (как в `ci.yml`; self-hosted — только если инфра вернёт канон)
 - [ ] Env: `MLFLOW_TRACKING_URI`, MinIO — когда compose доступен runner’у.
 
 ---
@@ -506,12 +712,15 @@ echo '{"status":"registered_stub"}' > ci-register.json
 
 # ЭТАП 5 — Интеграция с бэкендом и UI (параллельно с 3–4)
 
+> Сводка по Коле и контрактам: §«5.4 — Стыковка с веткой Коли» в начале файла.
+
 **Твои задачи:**
 
 - [ ] Документ `docs/ci-contract.md` (опционально) — dispatch + JSON + poll run id
 - [ ] Согласовать polling: бэк читает `GET /repos/.../actions/runs/{id}`
-- [ ] Заменить `CI_SKIP_PREFLIGHT` на реальные API
-- [ ] Убрать upload-artifact stub, когда бэк пишет в PG
+- [ ] Заменить `CI_SKIP_PREFLIGHT` на реальные API (в `preflight_*.sh`)
+- [ ] Коля: cherry-pick auth + `/ci/trigger` → переключить на `event_type` из `ci.yml` / `train.yml` / `deploy.yml`
+- [ ] Артефакты CI оставить даже когда бэк пишет в PG (для аудита GHA)
 
 **Сообщение бэкенду (когда ci.yml зелёный):**
 
@@ -604,12 +813,14 @@ echo '{"status":"registered_stub"}' > ci-register.json
 | Блокер | Кому |
 |--------|------|
 | Runner queued forever | Инфра / PAT / `ci-runner` compose |
-| `log_event` / db-smoke | Бэкенд `core/db.py` |
-| Кнопка RUN не запускает workflow | Бэкенд dispatch |
+| db-smoke в GHA без Postgres | Ты: SKIP ок; или `services: postgres` позже |
+| Findings пустые в UI | Бэкенд: API + `ingest_gate_report` (код в `core/db` на Rina) |
+| Кнопка RUN не запускает workflow | Бэкенд dispatch (Коля: довести `/ci/trigger` → `train`) |
+| Конфликт `run-security-scan` vs `verify` | Коля + ты: §5.4 в начале файла |
 | Нет реального обучения | ML / `train.py` |
 | Approve / Tier в UI | Фронт + бэкенд HITL |
 | MinIO WORM prod | Бэкенд `core/storage.py` + инфра MinIO |
 
 ---
 
-*Обновляй чекбоксы в этом файле по ходу работы. Полная теория — в [`Rina_WOrk.md`](Rina_WOrk.md).*
+*Обновляй чекбоксы в этом файле по ходу работы. **С чего начать сегодня:** §«СЕЙЧАС» → «Закрыть этап 1». Полная теория — [`Rina_WOrk.md`](Rina_WOrk.md).*
