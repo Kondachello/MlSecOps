@@ -16,67 +16,141 @@ from pathlib import Path
 GATE = "G3"
 
 # Белый список доверенных пакетов (демо; в реале — вести централизованно).
-ALLOWLIST = {
-    "numpy", "pandas", "scikit-learn", "scipy", "torch", "tensorflow", "xgboost",
-    "catboost", "lightgbm", "onnx", "onnxruntime", "transformers", "safetensors",
-    "fastapi", "uvicorn", "pydantic", "mlflow", "redis", "boto3", "requests",
-    "pyarrow", "streamlit", "pytest", "psycopg", "python-dotenv",
+ALLOWLIST: set[str] = {
+    "numpy", "pandas", "scikit-learn", "sklearn", "scipy", "torch", "torchvision",
+    "tensorflow", "keras", "xgboost", "catboost", "lightgbm",
+    "onnx", "onnxruntime", "onnxruntime-gpu",
+    "transformers", "safetensors", "tokenizers", "datasets", "huggingface-hub",
+    "fastapi", "flask", "uvicorn", "pydantic", "pydantic-settings", "starlette",
+    "mlflow", "redis", "boto3", "botocore", "requests", "httpx", "aiohttp",
+    "pyarrow", "pyarrow-stubs",
+    "streamlit", "pytest", "pytest-asyncio", "psycopg", "psycopg2-binary",
+    "python-dotenv", "python-multipart", "sqlalchemy", "alembic",
     "evidently", "modelscan", "picklescan", "presidio-analyzer",
-    "gitleaks", "pip-audit", "bandit", "trivy",
+    "gitleaks", "pip-audit", "bandit", "trivy", "cosign",
+    "cryptography", "pyjwt", "passlib", "bcrypt",
+    "pillow", "matplotlib", "seaborn", "plotly",
+    "tqdm", "rich", "click", "typer",
 }
-# Частые опечатки-двойники (для наглядного демо).
-KNOWN_TYPOSQUATS = {"pytirch", "tenserflew", "tensorflw", "numyp", "pandsa", "scikit_learn"}
 
-RE_REQ = re.compile(r"^\s*([A-Za-z0-9_.\-]+)\s*([=<>!~]=?)?\s*([0-9A-Za-z.\-]+)?")
+# Известные опечатки-двойники (для наглядного демо).
+KNOWN_TYPOSQUATS: set[str] = {
+    "pytirch", "tenserflew", "tensorflw", "numyp", "pandsa", "scikit_learn",
+    "sckikit-learn", "pytoch", "tensorfow", "mlfolw", "fasapi",
+}
+
+# Доверенные индексы (PyPI и его зеркала)
+TRUSTED_INDICES: set[str] = {
+    "https://pypi.org/simple",
+    "https://pypi.org/simple/",
+    "https://files.pythonhosted.org",
+    "https://pypi.org",
+}
+
+# Доверенные HF-пространства имён (для --find-links из HF)
+TRUSTED_HF_PREFIXES = ("https://huggingface.co/", "https://hf.co/")
+
+RE_REQ = re.compile(r"^\s*([A-Za-z0-9_.\-]+)\s*([=<>!~]=?)?\s*([0-9A-Za-z.*\-+]+)?")
 
 
-def _parse(req_text: str) -> list[tuple[str, str | None]]:
-    out = []
-    for line in req_text.splitlines():
-        line = line.split("#", 1)[0].strip()
+def _parse_requirements(req_text: str) -> tuple[list[tuple[str, str | None]], list[str]]:
+    """Вернуть (пакеты, custom_indices). Пропускать опции и комментарии."""
+    pkgs: list[tuple[str, str | None]] = []
+    custom_indices: list[str] = []
+    for raw_line in req_text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
         if not line:
+            continue
+        # Строки с индексами
+        if line.startswith(("--index-url", "--extra-index-url", "-i ", "--find-links", "-f ")):
+            parts = line.split(None, 1)
+            url = parts[1].strip() if len(parts) > 1 else ""
+            if url:
+                custom_indices.append(url)
+            continue
+        # Пропустить остальные опции (--hash, -r, --require-hashes, etc.)
+        if line.startswith("-"):
             continue
         m = RE_REQ.match(line)
         if m:
-            out.append((m.group(1).lower(), m.group(3)))
-    return out
+            pkgs.append((m.group(1).lower(), m.group(3)))
+    return pkgs, custom_indices
+
+
+def _normalize_name(name: str) -> str:
+    """PEP 503 нормализация: нижний регистр, _ и - → -."""
+    return re.sub(r"[-_.]+", "-", name.lower())
 
 
 def gate_check(path: str) -> list[dict]:
-    req = Path(path) / "requirements.txt" if Path(path).is_dir() else Path(path)
-    if not req.exists():
-        return [{"check": "requirements_present", "status": "SKIP",
-                 "detail": "нет requirements.txt", "evidence": {}}]
+    req_path = Path(path) / "requirements.txt" if Path(path).is_dir() else Path(path)
+    if not req_path.exists():
+        return [{"check": "requirements_present", "status": "SKIP", "severity": "low",
+                 "detail": f"нет requirements.txt по пути {req_path}", "evidence": {}}]
 
-    pkgs = _parse(req.read_text(encoding="utf-8"))
+    text = req_path.read_text(encoding="utf-8")
+    pkgs, custom_indices = _parse_requirements(text)
     results: list[dict] = []
 
-    # 1. Typosquatting / allow-list имён
-    bad_names = [(n, v) for n, v in pkgs if n in KNOWN_TYPOSQUATS or n not in ALLOWLIST]
-    typos = [n for n, _ in pkgs if n in KNOWN_TYPOSQUATS]
+    # 1. Typosquatting / allow-list
+    typosquats: list[str] = []
+    unknown: list[str] = []
+    for name, _ver in pkgs:
+        norm = _normalize_name(name)
+        if norm in KNOWN_TYPOSQUATS:
+            typosquats.append(name)
+        elif norm not in {_normalize_name(a) for a in ALLOWLIST}:
+            unknown.append(name)
+    bad_names = typosquats + unknown
     results.append({"check": "name_allowlist",
                     "status": "FAIL" if bad_names else "PASS",
-                    "detail": f"вне allow-list/опечатки: {[n for n, _ in bad_names]}"
-                              if bad_names else "все имена доверенные",
-                    "evidence": {"unknown": [n for n, _ in bad_names], "typosquats": typos}})
+                    "severity": "critical",
+                    "detail": (f"вне allow-list/опечатки: {bad_names}" if bad_names
+                               else "все имена доверенные"),
+                    "evidence": {"typosquats": typosquats, "unknown": unknown}})
 
-    # 2. Пиннинг версий
-    unpinned = [n for n, v in pkgs if not v]
+    # 2. Пиннинг версий (==конкретная_версия или с хешами)
+    unpinned: list[str] = []
+    for name, ver in pkgs:
+        if not ver or "*" in (ver or ""):
+            unpinned.append(name)
     results.append({"check": "version_pinning",
                     "status": "FAIL" if unpinned else "PASS",
-                    "detail": f"незапиненные: {unpinned}" if unpinned else "все версии запинены",
+                    "severity": "medium",
+                    "detail": (f"незапиненные: {unpinned}" if unpinned
+                               else "все версии запинены"),
                     "evidence": {"unpinned": unpinned}})
 
-    # 3. Доверенный источник (HF namespace / индекс PyPI) — TODO: проверять --index-url / namespace
-    results.append({"check": "trusted_source", "status": "SKIP",
-                    "detail": "TODO: проверка индекса/namespace источника", "evidence": {}})
+    # 3. Доверенный источник (--index-url / --extra-index-url / --find-links)
+    untrusted_indices: list[str] = []
+    for url in custom_indices:
+        url_norm = url.rstrip("/")
+        is_trusted = (
+            any(url_norm.startswith(t.rstrip("/")) for t in TRUSTED_INDICES)
+            or any(url_norm.startswith(p) for p in TRUSTED_HF_PREFIXES)
+        )
+        if not is_trusted:
+            untrusted_indices.append(url)
+    results.append({"check": "trusted_source",
+                    "status": "FAIL" if untrusted_indices else "PASS",
+                    "severity": "high",
+                    "detail": (f"недоверенные индексы: {untrusted_indices}" if untrusted_indices
+                               else "индексы не заданы или из доверенных"),
+                    "evidence": {"custom_indices": custom_indices,
+                                 "untrusted": untrusted_indices}})
+
     return results
 
 
 def build_report(target: str, results: list[dict]) -> dict:
     failed = [r["check"] for r in results if r["status"] == "FAIL"]
+    sev_summary: dict[str, list[str]] = {}
+    for r in results:
+        if r["status"] == "FAIL":
+            sev = r.get("severity", "medium")
+            sev_summary.setdefault(sev, []).append(r["check"])
     return {"gate": GATE, "asset": target, "passed": not failed,
-            "checks": results, "failed_checks": failed}
+            "checks": results, "failed_checks": failed, "severity_summary": sev_summary}
 
 
 def main() -> None:

@@ -6,9 +6,17 @@
 ## Подготовка
 ```bash
 docker compose -f infra/docker-compose.yml up --build
-python data/make_datasets.py        # демо-датасеты (чистые + «приманки»)
+docker compose -f infra/docker-compose.gates.yml build   # образы гейтов mlsec-gate-*
+python data/make_datasets.py            # демо-датасеты: train_m1_clean / _poisoned / prod_traffic_drifted
+python demo/insecure/make_model_fixtures.py   # фикстуры моделей: model_safe.safetensors (PASS) / model_unsafe.pkl (FAIL)
 # seed первого MLSecOps + демо-пользователей (DS) — из .env
 ```
+
+**Демо-фикстуры (приманки для гейтов, только в `demo/`):** датасеты — `data/train_m1_poisoned.csv`;
+код — `demo/insecure/leaky.py` (секрет→gitleaks, `subprocess(shell=True)`→bandit B602 HIGH);
+зависимости — `demo/insecure/requirements.txt` (CVE для pip-audit), `demo/insecure/requirements_vuln.txt`
+(typosquat `pytirch`/`tenserflew` для G3); модель — `demo/insecure/model_unsafe.pkl`;
+паспорт — `demo/insecure/model_card_incomplete.json` (FAIL) vs `demo/model_card_complete.json` (PASS).
 
 ## Сценарий 1 — Загрузка датасета (G1, False Positives)
 1. DS загружает датасет (локальный файл / ссылка HF).
@@ -23,10 +31,11 @@ python data/make_datasets.py        # демо-датасеты (чистые + 
 1. DS экспериментирует в Jupyter+MLflow (логирует данные/код/модель через прокси).
 2. В UI: «Просканировать ресурс» → `/verify` → G5 (lineage) + G2 (код: gitleaks/bandit/pip-audit)
    + G3 (зависимости).
-3. Подкладываем **приманки**: секрет в `train.py` (gitleaks) и `pytirch` в requirements (G3) →
-   PR/верификация краснеет, видна причина.
-4. После исправления — PASS → запускается `train.yml`: обучение в CI → G4 на CI-артефакте →
-   регистрация в реестре с lineage (`trained_in_ci=true`).
+3. Подкладываем **приманки**: `demo/insecure/leaky.py` (секрет→gitleaks, `shell=True`→bandit HIGH),
+   `demo/insecure/requirements.txt` (CVE→pip-audit) и `pytirch` из `requirements_vuln.txt` (G3) →
+   PR/верификация краснеет, видна причина; неполный `model_card_incomplete.json` → G5 FAIL.
+4. После исправления (чистый код + `demo/model_card_complete.json`) — PASS → запускается `train.yml`:
+   обучение в CI → G4 на CI-артефакте → регистрация в реестре с lineage (`trained_in_ci=true`).
 
 ## Сценарий 3 — Деплой в прод (G4, подписи, Tier/HITL, RBAC)
 1. DS жмёт DEPLOY у модели `Tier=HIGH` (кредитный скоринг). Пайплайн **встаёт** — нужен HITL.
@@ -34,8 +43,8 @@ python data/make_datasets.py        # демо-датасеты (чистые + 
 3. MLSecOps делает ручную проверку → Approve (reason) → `deploy.yml`: G2(deploy)+trivy + G4
    (SHA-сверка) + cosign-подпись → проверка подписи+SHA перед `docker run` → alias=`production`.
 4. **Подмена артефакта (#4):** руками портим файл в MinIO → деплой падает «hash mismatch».
-5. **Внешние веса (поток B):** затягиваем `.pkl` с HF → G4 блок «unsafe format»; берём
-   `.safetensors` → Tier=HIGH авто → обязательный HITL.
+5. **Внешние веса (поток B):** затягиваем `demo/insecure/model_unsafe.pkl` → G4 блок «unsafe format»;
+   берём `demo/model_safe.safetensors` → Tier=HIGH авто → обязательный HITL.
 
 ## Сценарий 4 — Атака в проде (G7, мониторинг)
 1. Модель в проде, инференс-API работает.
