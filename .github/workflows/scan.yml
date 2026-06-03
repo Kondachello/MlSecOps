@@ -1,0 +1,47 @@
+name: Security Scan
+
+on:
+  repository_dispatch:
+    types: [run-security-scan]
+
+jobs:
+  run-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.client_payload.ref || github.event.repository.default_branch }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pandas numpy
+
+      - name: Install security tools
+        if: github.event.client_payload.check_type == 'code_gate'
+        run: pip install bandit pip-audit || true
+
+      - name: Generate demo datasets
+        if: github.event.client_payload.check_type == 'data_gate'
+        run: python data/make_datasets.py
+
+      - name: Run security gate
+        run: |
+          CHECK_TYPE="${{ github.event.client_payload.check_type }}"
+          TARGET="${{ github.event.client_payload.target }}"
+          case "$CHECK_TYPE" in
+            data_gate)
+              python src/gates/data_gate/data_gate.py --path "$TARGET" --json
+              ;;
+            code_gate)
+              python src/gates/code_gate/code_gate.py --path "$TARGET" --stage ci --json
+              ;;
+            dependency_gate)
+              python src/gates/dependency_gate/dependency_gate.py --path "$TARGET" --json
+              ;;
+            *)
+              echo "Unknown check_type: $CHECK_TYPE"; exit 1
+              ;;
+          esac
