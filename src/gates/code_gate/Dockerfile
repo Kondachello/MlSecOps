@@ -14,9 +14,11 @@ RUN curl -sSfL \
     | tar -xz -C /usr/local/bin gitleaks \
     && chmod +x /usr/local/bin/gitleaks
 
-# trivy не в CI-образе: tar релиза v0.52.2 на GHA давал 404; в ci.yml --stage ci trivy не нужен.
-# На deploy — trivy на runner / в deploy.yml (docs/12_CICD, Rina_todo этап 4).
-# code_gate при stage=deploy без trivy в PATH → check SKIP, не fail сборки образа.
+# trivy — deploy (--stage deploy --image); официальный install.sh (прямой tar v0.52 давал 404 на GHA)
+ARG TRIVY_VERSION=0.58.2
+RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+    | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}" \
+    && trivy --version
 
 WORKDIR /app
 COPY requirements.txt .

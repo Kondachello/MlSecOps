@@ -148,16 +148,29 @@ def _parse_pip_audit(out: str) -> list[dict]:
     return vulns
 
 
+def _resolve_requirements(path: str) -> str | None:
+    """Найти requirements.txt: рядом с path, в каталоге path или в корне репо (cwd)."""
+    from pathlib import Path
+
+    p = Path(path)
+    if p.is_file() and p.name.endswith(".txt"):
+        return str(p)
+    if p.is_dir():
+        local = p / "requirements.txt"
+        if local.is_file():
+            return str(local)
+    root_req = Path.cwd() / "requirements.txt"
+    if root_req.is_file():
+        return str(root_req)
+    return None
+
+
 def check_cve(path: str) -> dict:
-    """pip-audit — FAIL при любых известных CVE."""
-    import os
-    if path.endswith(".txt"):
-        req = path
-    else:
-        req = os.path.join(path, "requirements.txt")
-    if not os.path.isfile(req):
+    """pip-audit — FAIL при любых известных CVE (SCA зависимостей, G2)."""
+    req = _resolve_requirements(path)
+    if not req:
         return {"check": "cve_deps", "status": "SKIP", "severity": "critical",
-                "detail": f"requirements.txt не найден по пути {req}", "evidence": {}}
+                "detail": "requirements.txt не найден (ни в path, ни в корне репо)", "evidence": {}}
     rc, out = _run(["pip-audit", "-r", req, "-f", "json"])
     if rc == 127:
         return {"check": "cve_deps", "status": "SKIP", "severity": "critical",

@@ -22,11 +22,27 @@ jobs:
       - name: "HITL gate (Tier=HIGH требует approved_by)"
         run: echo 'TODO check approved status in registry; stop if pending_hitl'
 
-      - name: "G2 Code Gate (deploy: secrets+SAST+CVE)"
-        run: python src/gates/code_gate/code_gate.py --path . --stage ci --json
+      - name: install G2 scanners + trivy
+        run: |
+          pip install --no-cache-dir bandit pip-audit
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
+            | tar -xz -C /usr/local/bin gitleaks
+          bash scripts/ci/install_trivy.sh
+          trivy --version
 
-      - name: "Build image + trivy (единственный запуск)"
-        run: echo 'TODO docker build and trivy image CRITICAL,HIGH exit-code 1'
+      - name: build inference image (для trivy image scan)
+        run: docker build -f infra/Dockerfile.backend -t mlsec-inference:ci .
+
+      - name: "G2 deploy — secrets + SAST + SCA + trivy image (единственный trivy)"
+        run: |
+          python src/gates/code_gate/code_gate.py \
+            --path . --stage deploy --image mlsec-inference:ci --json > gate-g2-deploy.json
+          cat gate-g2-deploy.json
+          python scripts/ci/assert_gate_checks.py --require secrets sast cve_deps trivy_image --no-fail gate-g2-deploy.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-g2-deploy
+          path: gate-g2-deploy.json
 
       - name: "G4 Model Gate (SHA-сверка с реестром)"
         run: python src/gates/model_gate/model_gate.py --path artifacts/model.safetensors --expected-sha "$EXPECTED_SHA" --json

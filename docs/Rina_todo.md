@@ -272,6 +272,18 @@ cp .env.example .env   # заполнить позже с командой
 
 **Бэкенд должен:** парсить JSON → `findings` + `events` + `set_status`. Гейт **не пишет в БД**.
 
+### SAST / SCA / Trivy — где включены (G2 + G3)
+
+| Анализ | Инструмент | Где в CI | Job / стадия |
+|--------|------------|----------|----------------|
+| **Secrets** | gitleaks | `ci.yml` | `code-gate` |
+| **SAST** | bandit (HIGH) | `ci.yml` | `code-gate` |
+| **SCA (CVE deps)** | pip-audit | `ci.yml` | `code-gate` (корневой `requirements.txt`) |
+| **Supply (typosquat)** | G3 dependency_gate | `ci.yml` | `dependency-gate` |
+| **Trivy (образ)** | trivy image | `deploy.yml` | один раз на `mlsec-inference:ci` (`--stage deploy`) |
+
+Проверка «сканеры реально запустились»: `scripts/ci/assert_gate_checks.py --require secrets sast cve_deps` (в deploy ещё `trivy_image`).
+
 ---
 
 # ЭТАП 0 — Подготовка среды (1–2 дня)
