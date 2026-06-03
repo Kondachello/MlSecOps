@@ -9,17 +9,60 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://authproxy:4180/mlflow")
+# Бэкенд ходит в MLflow server-side НАПРЯМУЮ (он доверенный), минуя собственный /mlflow-прокси.
+# Для дев это локальный mlflow server; в проде — внутренний адрес MLflow за прокси.
+MLFLOW_UPSTREAM_URL = os.getenv("MLFLOW_UPSTREAM_URL",
+                                os.getenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000"))
 
 
 def _client():
-    """MlflowClient(tracking_uri=MLFLOW_TRACKING_URI). TODO."""
-    raise NotImplementedError("TODO: from mlflow.tracking import MlflowClient")
+    """MlflowClient на внутренний MLflow (server-side, без нашего auth-прокси)."""
+    from mlflow.tracking import MlflowClient
+    return MlflowClient(tracking_uri=MLFLOW_UPSTREAM_URL)
+
+
+def list_recent_runs(limit: int = 50) -> list[dict]:
+    """Последние раны по всем экспериментам — для UI «MLflow раны».
+
+    Возвращает плоские dict'ы: run_id, experiment, run_name, user, status,
+    start_time, метрики и параметры. Если MLflow недоступен — пустой список.
+    """
+    try:
+        c = _client()
+        exps = c.search_experiments()
+        by_id = {e.experiment_id: e.name for e in exps}
+        if not by_id:
+            return []
+        runs = c.search_runs(experiment_ids=list(by_id.keys()),
+                             max_results=limit, order_by=["start_time DESC"])
+    except Exception:
+        return []
+    out = []
+    for r in runs:
+        tags = r.data.tags or {}
+        out.append({
+            "run_id": r.info.run_id,
+            "experiment": by_id.get(r.info.experiment_id, r.info.experiment_id),
+            "run_name": tags.get("mlflow.runName", ""),
+            # личность: серверный штамп прокси (если проставлен) либо mlflow.user
+            "user": tags.get("mlflow.user", r.info.user_id or ""),
+            "status": r.info.status,
+            "start_time": r.info.start_time,
+            "metrics": dict(r.data.metrics),
+            "params": dict(r.data.params),
+        })
+    return out
 
 
 def list_models() -> list[dict]:
-    """Список моделей/экспериментов для выпадашки UI. TODO: search_runs/experiments."""
-    raise NotImplementedError("TODO")
+    """Зарегистрированные модели из MLflow Model Registry (для выпадашек)."""
+    try:
+        c = _client()
+        return [{"name": m.name,
+                 "latest_versions": [v.version for v in (m.latest_versions or [])]}
+                for m in c.search_registered_models()]
+    except Exception:
+        return []
 
 
 def list_runs(model: str) -> list[dict]:

@@ -19,3 +19,7 @@ data/*.parquet
 .idea/
 .DS_Store
 mlruns/
+
+# Локальные дев-БД и MLflow-стор (не коммитим)
+*.db
+mlartifacts/

@@ -32,6 +32,9 @@ app = FastAPI(title="MLSecOps Gatekeeper") if FastAPI else None
 
 if app:
     db.init_db()  # SQLite-дев: создать схему (в Postgres — no-op, схема из init.sql)
+    # Auth-прокси перед MLflow (валидирует JWT, штампует X-Authenticated-User).
+    from src.api.mlflow_proxy import router as mlflow_router
+    app.include_router(mlflow_router)
 
 
 # ---- модели запросов --------------------------------------------------------
@@ -159,8 +162,19 @@ if app:
     # ---- видимость / выпадашки ----
     @app.get("/api/v1/models")
     def list_models():
-        """Список моделей из MLflow + реестр (для выпадашек). TODO: mlflow_utils.list_models()."""
-        return {"models": []}  # TODO
+        """Зарегистрированные модели из MLflow Registry (для выпадашек)."""
+        from core import mlflow_utils
+        return {"models": mlflow_utils.list_models()}
+
+    @app.get("/api/v1/mlflow/runs")
+    def mlflow_runs(request: Request, limit: int = 50):
+        """Последние MLflow-раны по всем экспериментам (нужна аутентификация)."""
+        try:
+            identity.current_user(request)
+        except identity.AuthError as e:
+            raise HTTPException(401, str(e))
+        from core import mlflow_utils
+        return {"runs": mlflow_utils.list_recent_runs(limit)}
 
     @app.get("/api/v1/runs")
     def list_runs(model: str):
