@@ -51,16 +51,25 @@ jobs:
           print('G2 PASS')
           "
 
-      # Step 2: обучение на ПРОВЕРЕННЫХ коде и данных
+      # Step 2: обучение на ПРОВЕРЕННЫХ коде и данных.
+      # Диспатч по имени модели → нужный train-скрипт (CLI у всех одинаков).
       - name: "Step 2 — обучение в CI"
         run: |
           mkdir -p ${{ env.MODEL_ARTIFACT_DIR }}
-          python src/train/train.py \
+          MODEL="${{ github.event.inputs.model_name || github.event.client_payload.model_name }}"
+          case "$MODEL" in
+            text_classifier)  SCRIPT=src/train/train_text.py ;;
+            transaction_risk) SCRIPT=src/train/train_risk.py ;;
+            *)                SCRIPT=src/train/train.py ;;   # credit_scoring (по умолчанию)
+          esac
+          echo "Обучаю $MODEL через $SCRIPT"
+          python "$SCRIPT" \
+            --model-name "$MODEL" \
             --git-commit "${{ github.event.inputs.git_commit || github.sha }}" \
             --dataset-name "${{ github.event.inputs.dataset_name || github.event.client_payload.dataset_name }}" \
             --dataset-version "${{ github.event.inputs.dataset_version || github.event.client_payload.dataset_version }}" \
             --data-source-type verified_id
-        # train.py пишет путь к артефакту в artifacts/model_path.txt и run_id в artifacts/run_id.txt
+        # train-скрипт пишет artifacts/model_path.txt и artifacts/run_id.txt
 
       # Step 3: G4 Model Gate на CI-артефакте (формат + modelscan + SHA)
       - name: "Step 3 — G4 Model Gate на CI-артефакте"

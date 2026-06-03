@@ -65,14 +65,56 @@ services:
     ports: ["8501:8501"]
     depends_on: [backend]
 
-  # Сервис инференса (G7) — пример; на каждую модель свой сервис.
-  inference:
+  # Инференс-сервисы (G7) — по микросервису на модель (масштабируемость/изоляция).
+  inference-credit:        # модель №1: табличный credit scoring
     build: { context: .., dockerfile: infra/Dockerfile.backend }
     command: uvicorn src.serve.app:app --host 0.0.0.0 --port 8080
     environment:
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - MODEL_PATH=/app/artifacts/credit_scoring.onnx
     ports: ["8080:8080"]
+    volumes:
+      - ../logs:/app/logs                      # фичи для G6 PSI (общий том с monitor)
+      - ../artifacts:/app/artifacts:ro
     depends_on: [redis]
+
+  inference-text:          # модель №2: текстовый классификатор
+    build: { context: .., dockerfile: infra/Dockerfile.backend }
+    command: uvicorn src.serve.app_text:app --host 0.0.0.0 --port 8081
+    environment:
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - TEXT_MODEL_PATH=/app/artifacts/text_classifier.onnx
+    ports: ["8081:8081"]
+    volumes:
+      - ../logs:/app/logs
+      - ../artifacts:/app/artifacts:ro
+    depends_on: [redis]
+
+  inference-risk:          # модель №3: transaction risk (GBT, 6 фич)
+    build: { context: .., dockerfile: infra/Dockerfile.backend }
+    command: uvicorn src.serve.app_risk:app --host 0.0.0.0 --port 8082
+    environment:
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - RISK_MODEL_PATH=/app/artifacts/transaction_risk.onnx
+    ports: ["8082:8082"]
+    volumes:
+      - ../logs:/app/logs
+      - ../artifacts:/app/artifacts:ro
+    depends_on: [redis]
+
+  # G6 мониторинг — работает постоянно (watch-режим): дрейф по логам инференса + детект подмены.
+  monitor:
+    build: { context: .., dockerfile: infra/Dockerfile.backend }
+    command: >
+      python src/monitor/monitor.py
+      --reference data/train_m1_clean.csv
+      --live-model credit_scoring --columns amount age
+      --watch 30
+    volumes:
+      - ../logs:/app/logs          # общий том с инференс-сервисами (фичи для PSI)
+      - ../data:/app/data:ro
+      - ../artifacts:/app/artifacts:ro
+    depends_on: [inference-credit]
 
   # CI: self-hosted GitHub Actions runner (джобы исполняются локально). TODO: образ/токен.
   ci-runner:

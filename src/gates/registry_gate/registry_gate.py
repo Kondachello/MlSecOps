@@ -32,7 +32,7 @@ RECOMMENDED_LINEAGE: list[str] = [
 ]
 
 # Допустимые значения Tier
-VALID_TIERS: set[str] = {"LOW", "MEDIUM", "HIGH"}
+VALID_TIERS: set[str] = {"LOW", "MED", "HIGH"}  # канон: совпадает с init.sql CHECK и core/model_card
 
 # Правила авто-Tier (fail-safe HIGH): если эти признаки присутствуют → Tier должен быть HIGH
 HIGH_TIER_RULES: dict[str, str] = {

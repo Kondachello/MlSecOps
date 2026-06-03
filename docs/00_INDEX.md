@@ -49,6 +49,15 @@
 16. [`15_TECH_STACK.md`](15_TECH_STACK.md) — технологии и обоснование выбора.
 17. [`16_DEMO_SCENARIOS.md`](16_DEMO_SCENARIOS.md) — сценарии демонстрации.
 
+### Локальная разработка
+17b. [`19_LOCAL_DEV_WITHOUT_A.md`](19_LOCAL_DEV_WITHOUT_A.md) — как запустить B+C-стек автономно,
+    пока бэкенд A не готов (Makefile, `scripts/demo_local.sh`, graceful-деградация).
+
+### Обзор реализованного (для новичка)
+- [`B_C_DETAILED_OVERVIEW.md`](B_C_DETAILED_OVERVIEW.md) — полный разбор «от и до» всего, что
+  сделали B и C: каждый гейт, модели, рантайм, мониторинг, UI, стыки, решения. Читать, если
+  впервые видишь проект.
+
 ### Для агента-исполнителя
 18. [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) — подробный пошаговый план реализации
     с фазами, критериями приёмки и Definition of Done.

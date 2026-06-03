@@ -15,6 +15,10 @@ cosign.key
 data/*.csv
 data/*.parquet
 
+# Runtime logs / audit fallback (генерируются)
+logs/
+artifacts/*.onnx
+
 # Local tooling
 .idea/
 .DS_Store

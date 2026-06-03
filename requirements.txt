@@ -13,6 +13,13 @@ pandas
 requests
 python-dotenv
 
+# ML (модель №1 — табличная; экспорт в ONNX = G4-разрешённый формат)
+scikit-learn
+skl2onnx
+onnx
+onnxruntime
+numpy
+
 # UI
 streamlit
 
