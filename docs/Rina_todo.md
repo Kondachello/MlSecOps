@@ -194,14 +194,15 @@ docker images
 
 # ЭТАП 1 — Довести `ci.yml` (2–3 дня)
 
-**Цель:** на каждый push/PR — параллельные проверки данных, кода, зависимостей.  
-**Когда запускать:** каждый коммит в `Rina`; вручную Actions → **ci** → Run workflow.
+**Цель:** на каждый push/PR — параллельные проверки G1–G5 + build-gates.  
+**Перенесено с [sasha1](https://github.com/Kondachello/MlSecOps/tree/sasha1):** гейты G2/G3/G4/G5, фикстуры, jobs в `ci.yml` (runner у нас `ubuntu-22.04`).  
+**Когда запускать:** push в `Rina` или Actions → **ci** → Run workflow.
 
 ---
 
 ## 1.1 — Job `syntax` (уже есть)
 
-- [ ] После добавления новых `.py` — дописать пути в список `py_compile` в `ci.yml`.
+- [x] Пути гейтов G1–G5 в `py_compile` (из sasha1)
 - [ ] Локально перед push:
   ```bash
   python -m py_compile src/gates/*/*.py
@@ -213,8 +214,8 @@ docker images
 
 ## 1.2 — Job `data-gate` (G1) — ужесточить при необходимости
 
-- [ ] Убедиться, что шаги **clean passes** и **poisoned is blocked** без `|| true`.
-- [ ] Push → проверить в GitHub Actions оба шага зелёные/красные как задумано.
+- [x] **clean passes** / **poisoned is blocked** без `|| true` (ветка Rina, логика G1 сохранена)
+- [ ] Push → перепроверить в Actions после merge с sasha1-гейтами
 
 **Ничего не говорить коллегам по данным** — ingest на бэке; ты только фикстуры в CI.
 
@@ -222,7 +223,7 @@ docker images
 
 ## 1.3 — Job `dependency-gate` (G3)
 
-- [ ] Уже должно работать; перепроверить после push.
+- [x] Реализация и job из sasha1; перепроверить в Actions
 
 ---
 
@@ -230,13 +231,8 @@ docker images
 
 **Файлы:**
 
-- [ ] `src/gates/code_gate/code_gate.py` — парсинг bandit/pip-audit JSON, FAIL только HIGH/CRITICAL.
-- [ ] `src/gates/code_gate/requirements.txt` — bandit, pip-audit (если вынесено).
-- [ ] `.github/workflows/ci.yml`:
-  - [ ] Установить **gitleaks** (action `gitleaks/gitleaks-action` или curl binary).
-  - [ ] **Убрать `|| true`** на clean и bad шагах.
-  - [ ] clean: `--path src` → **exit 0 обязателен**.
-  - [ ] bad: `--path demo/insecure` → **exit 1 обязателен** (обёртка `if ... exit 1` как у data-gate).
+- [x] `code_gate.py` из sasha1 — парсинг bandit/pip-audit/gitleaks JSON
+- [x] `ci.yml`: gitleaks v8.18.4, без `|| true`, clean/bad как в sasha1
 
 **Проверка локально** — повторить 0.2 после правок.
 
@@ -247,17 +243,17 @@ docker images
 
 ## 1.5 — Job `registry-gate` (G5) — **создать**
 
-**Создать фикстуры:**
+**Фикстуры (из sasha1):**
 
 | Файл | Назначение |
 |------|------------|
-| `demo/model_cards/valid_card.json` | PASS |
-| `demo/model_cards/invalid_card.json` | FAIL (нет owner/tier) |
+| `demo/model_card_complete.json` | PASS |
+| `demo/insecure/model_card_incomplete.json` | FAIL |
 
 **Файлы:**
 
-- [ ] Доработать `src/gates/registry_gate/registry_gate.py` под эти JSON.
-- [ ] В `ci.yml` добавить job `registry-gate` по образцу `dependency-gate`.
+- [x] `registry_gate.py` из sasha1 (tier, lineage, auto-tier)
+- [x] job `registry-gate` в `ci.yml`
 
 **Коллегам (бэк + фронт):**  
 «Формат model card для G5 — согласуем поля с `core/model_card.py`. Вот пример valid: `demo/model_cards/valid_card.json`».
@@ -266,15 +262,7 @@ docker images
 
 ## 1.6 — Job `build-gates` — **создать**
 
-- [ ] В `ci.yml`:
-  ```yaml
-  build-gates:
-    runs-on: [self-hosted]
-    steps:
-      - uses: actions/checkout@v4
-      - run: bash scripts/ci/build_all_gates.sh
-  ```
-- [ ] При желании: шаг «smoke docker» — `docker run mlsec-gate-data --path ...`.
+- [x] job `build-gates` в `ci.yml` (`ubuntu-22.04`, compose build + smoke G3/G4 в контейнере)
 
 **Коллегам:** не обязательно.
 
@@ -327,15 +315,13 @@ docker images
 
 **Файлы:**
 
-- [ ] `src/gates/model_gate/model_gate.py`:
-  - [ ] subprocess **modelscan** (нет → SKIP)
-  - [ ] `--expected-sha <hash>` для deploy
-  - [ ] `.pkl` → FAIL
-- [ ] `src/gates/model_gate/Dockerfile` — установка modelscan при необходимости.
+- [x] `model_gate.py` из sasha1 (modelscan/picklescan, `.pkl` → FAIL)
+- [ ] `--expected-sha` для deploy (этап deploy)
+- [x] `make_model_fixtures.py` + job `model-gate` в CI
 
 **Создать фикстуру:**
 
-- [ ] `demo/models/bad.pkl` (пустой/фейк) — только для CI bad-test
+- [x] `demo/insecure/model_unsafe.pkl` (генерируется скриптом)
 - [ ] `artifacts/.gitkeep` — папка под выход train
 
 **Проверка:**

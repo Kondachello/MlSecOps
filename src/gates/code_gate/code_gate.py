@@ -1,8 +1,8 @@
-"""G2 Code Gate — секреты + SAST + CVE зависимостей. Стадии: ci | deploy (deploy + trivy).
+"""G2 Code Gate — секреты + SAST + CVE зависимостей + CVE образа (deploy).
 
 Закрывает #8 (CVE), #10 (секреты). См. docs/07_SECURITY_GATES.md (G2).
-Инструменты вызываются как внешние бинарники; нет инструмента → SKIP (graceful), не падаем.
-Гейт сам в БД не пишет. Скелет: обвязка готова, разбор вывода инструментов — TODO.
+Инструменты: gitleaks, bandit, pip-audit; trivy только на стадии deploy.
+Гейт сам в БД не пишет; graceful SKIP при отсутствии инструмента.
 
 Запуск: docker run --rm -v "$CODE:/in:ro" mlsec-gate-code --path /in --stage ci --json
 """
@@ -18,7 +18,7 @@ GATE = "G2"
 
 
 def _run(cmd: list[str]) -> tuple[int, str]:
-    """Запустить сканер без shell. Возвращает (rc, output). Нет бинарника → rc=127."""
+    """Запустить сканер без shell. Нет бинарника → rc=127."""
     if shutil.which(cmd[0]) is None:
         return 127, f"{cmd[0]} not installed"
     try:
@@ -28,42 +28,183 @@ def _run(cmd: list[str]) -> tuple[int, str]:
         return 1, str(e)
 
 
+def _extract_json(out: str) -> object:
+    """Извлечь первый JSON-объект/массив из строки.
+
+    Находит самое раннее вхождение '{' или '[' (начало JSON), игнорируя
+    предшествующий не-JSON текст (например, warnings из stderr).
+    """
+    brace = out.find("{")
+    bracket = out.find("[")
+    if brace == -1 and bracket == -1:
+        return None
+    if brace == -1:
+        start = bracket
+    elif bracket == -1:
+        start = brace
+    else:
+        start = min(brace, bracket)
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(out, start)
+        return obj
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+
+def _parse_gitleaks(out: str) -> list[dict]:
+    """Parse gitleaks JSON → список {rule, file, line, match}."""
+    try:
+        data = _extract_json(out)
+        if data is None or out.strip() in ("null", ""):
+            return []
+        if not isinstance(data, list):
+            return []
+        return [
+            {"rule": f.get("RuleID", "?"),
+             "file": f.get("File", "?"),
+             "line": f.get("StartLine", 0),
+             "match": (f.get("Match") or "")[:80]}
+            for f in data
+        ]
+    except (AttributeError, TypeError):
+        return []
+
+
 def check_secrets(path: str) -> dict:
+    """gitleaks — любой detect → FAIL (critical)."""
     rc, out = _run(["gitleaks", "detect", "--source", path, "--no-banner",
-                    "--report-format", "json"])
+                    "--report-format", "json", "--no-git"])
     if rc == 127:
-        return {"check": "secrets", "status": "SKIP", "detail": out, "evidence": {}}
-    # gitleaks: rc!=0 → найдены секреты. TODO: распарсить JSON-отчёт в evidence.
-    found = rc != 0
-    return {"check": "secrets", "status": "FAIL" if found else "PASS",
-            "detail": "секреты найдены" if found else "секретов нет", "evidence": {}}
+        return {"check": "secrets", "status": "SKIP", "severity": "critical",
+                "detail": "gitleaks не установлен", "evidence": {}}
+    findings = _parse_gitleaks(out)
+    found = rc != 0 or bool(findings)
+    return {"check": "secrets",
+            "status": "FAIL" if found else "PASS",
+            "severity": "critical",
+            "detail": f"найдено секретов: {len(findings)}" if found else "секретов нет",
+            "evidence": {"findings": findings, "raw_exit": rc}}
+
+
+def _parse_bandit(out: str) -> list[dict]:
+    """Parse bandit JSON → HIGH-severity issues only."""
+    try:
+        data = _extract_json(out)
+        if data is None:
+            return []
+        results = data.get("results", []) if isinstance(data, dict) else []
+        return [
+            {"test": r.get("test_name", "?"),
+             "test_id": r.get("test_id", "?"),
+             "file": r.get("filename", "?"),
+             "line": r.get("line_number", 0),
+             "severity": r.get("issue_severity", "?"),
+             "confidence": r.get("issue_confidence", "?"),
+             "text": (r.get("issue_text") or "")[:100]}
+            for r in results
+            if r.get("issue_severity") == "HIGH"
+        ]
+    except (json.JSONDecodeError, AttributeError):
+        return []
 
 
 def check_sast(path: str) -> dict:
+    """bandit — FAIL только при HIGH-severity issues."""
     rc, out = _run(["bandit", "-r", path, "-f", "json", "-q"])
     if rc == 127:
-        return {"check": "sast", "status": "SKIP", "detail": out, "evidence": {}}
-    # TODO: парсить bandit JSON, FAIL только при HIGH-severity issues.
-    return {"check": "sast", "status": "FAIL" if rc != 0 else "PASS",
-            "detail": "bandit issues" if rc != 0 else "ok", "evidence": {}}
+        return {"check": "sast", "status": "SKIP", "severity": "high",
+                "detail": "bandit не установлен", "evidence": {}}
+    issues = _parse_bandit(out)
+    found = bool(issues)
+    return {"check": "sast",
+            "status": "FAIL" if found else "PASS",
+            "severity": "high",
+            "detail": f"HIGH-issues: {len(issues)}" if found else "HIGH-issues не найдено",
+            "evidence": {"high_issues": issues}}
+
+
+def _parse_pip_audit(out: str) -> list[dict]:
+    """Parse pip-audit JSON → список уязвимостей."""
+    raw = _extract_json(out)
+    if raw is None:
+        return []
+    # pip-audit v2 обёрнут в {"dependencies": [...]}, v1 — просто список
+    if isinstance(raw, dict):
+        deps = raw.get("dependencies", [])
+    elif isinstance(raw, list):
+        deps = raw
+    else:
+        return []
+    vulns = []
+    for dep in deps:
+        for v in dep.get("vulns", []):
+            vulns.append({
+                "package": dep.get("name", "?"),
+                "version": dep.get("version", "?"),
+                "id": v.get("id", "?"),
+                "aliases": v.get("aliases", []),
+                "fix_versions": v.get("fix_versions", []),
+            })
+    return vulns
 
 
 def check_cve(path: str) -> dict:
-    req = f"{path}/requirements.txt"
+    """pip-audit — FAIL при любых известных CVE."""
+    import os
+    if path.endswith(".txt"):
+        req = path
+    else:
+        req = os.path.join(path, "requirements.txt")
+    if not os.path.isfile(req):
+        return {"check": "cve_deps", "status": "SKIP", "severity": "critical",
+                "detail": f"requirements.txt не найден по пути {req}", "evidence": {}}
     rc, out = _run(["pip-audit", "-r", req, "-f", "json"])
     if rc == 127:
-        return {"check": "cve_deps", "status": "SKIP", "detail": out, "evidence": {}}
-    # TODO: парсить, FAIL при CRITICAL/HIGH.
-    return {"check": "cve_deps", "status": "FAIL" if rc != 0 else "PASS",
-            "detail": "уязвимые зависимости" if rc != 0 else "ok", "evidence": {}}
+        return {"check": "cve_deps", "status": "SKIP", "severity": "critical",
+                "detail": "pip-audit не установлен", "evidence": {}}
+    vulns = _parse_pip_audit(out)
+    found = bool(vulns)
+    return {"check": "cve_deps",
+            "status": "FAIL" if found else "PASS",
+            "severity": "critical",
+            "detail": f"уязвимых пакетов: {len(vulns)}" if found else "уязвимостей нет",
+            "evidence": {"vulns": vulns}}
+
+
+def _parse_trivy(out: str) -> list[dict]:
+    """Parse trivy JSON → CRITICAL/HIGH CVE list."""
+    data = _extract_json(out)
+    if data is None:
+        return []
+    cves = []
+    for r in (data.get("Results") or []):
+        for v in (r.get("Vulnerabilities") or []):
+            if v.get("Severity") in ("CRITICAL", "HIGH"):
+                cves.append({
+                    "cve": v.get("VulnerabilityID", "?"),
+                    "pkg": v.get("PkgName", "?"),
+                    "installed": v.get("InstalledVersion", "?"),
+                    "fixed": v.get("FixedVersion", "?"),
+                    "severity": v.get("Severity", "?"),
+                    "title": (v.get("Title") or "")[:120],
+                })
+    return cves
 
 
 def check_image_trivy(image: str) -> dict:
-    rc, out = _run(["trivy", "image", "--severity", "CRITICAL,HIGH", "--exit-code", "1", image])
+    """trivy image — запускается РОВНО ОДИН РАЗ на стадии deploy."""
+    rc, out = _run(["trivy", "image", "--severity", "CRITICAL,HIGH",
+                    "--format", "json", "--exit-code", "1", image])
     if rc == 127:
-        return {"check": "trivy_image", "status": "SKIP", "detail": out, "evidence": {}}
-    return {"check": "trivy_image", "status": "FAIL" if rc != 0 else "PASS",
-            "detail": "критичные CVE в образе" if rc != 0 else "ok", "evidence": {}}
+        return {"check": "trivy_image", "status": "SKIP", "severity": "critical",
+                "detail": "trivy не установлен", "evidence": {}}
+    cves = _parse_trivy(out)
+    found = bool(cves)
+    return {"check": "trivy_image",
+            "status": "FAIL" if found else "PASS",
+            "severity": "critical",
+            "detail": f"критичных CVE в образе: {len(cves)}" if found else "CVE не найдено",
+            "evidence": {"cves": cves}}
 
 
 def gate_check(path: str, *, stage: str = "ci", image: str | None = None) -> list[dict]:
@@ -75,8 +216,13 @@ def gate_check(path: str, *, stage: str = "ci", image: str | None = None) -> lis
 
 def build_report(target: str, results: list[dict]) -> dict:
     failed = [r["check"] for r in results if r["status"] == "FAIL"]
+    sev_summary: dict[str, list[str]] = {}
+    for r in results:
+        if r["status"] == "FAIL":
+            sev = r.get("severity", "medium")
+            sev_summary.setdefault(sev, []).append(r["check"])
     return {"gate": GATE, "asset": target, "passed": not failed,
-            "checks": results, "failed_checks": failed}
+            "checks": results, "failed_checks": failed, "severity_summary": sev_summary}
 
 
 def main() -> None:

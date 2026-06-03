@@ -27,4 +27,21 @@ Write-Host "=== G3 bad (expect exit 1) ==="
 python src/gates/dependency_gate/dependency_gate.py --path demo/insecure/requirements_vuln.txt --json 2>$null
 if ($LASTEXITCODE -eq 0) { throw "G3 bad must fail" }
 
-Write-Host "=== stage 0: basic checks OK ==="
+Write-Host "=== G5 complete card (expect exit 0) ==="
+python src/gates/registry_gate/registry_gate.py --card demo/model_card_complete.json --json
+if ($LASTEXITCODE -ne 0) { throw "G5 complete failed" }
+
+Write-Host "=== G5 incomplete card (expect exit 1) ==="
+$ErrorActionPreference = "Continue"
+python src/gates/registry_gate/registry_gate.py --card demo/insecure/model_card_incomplete.json --json 2>&1 | Out-Null
+$ErrorActionPreference = $prevEa
+if ($LASTEXITCODE -eq 0) { throw "G5 incomplete must fail" }
+
+Write-Host "=== G4 fixtures ==="
+python demo/insecure/make_model_fixtures.py
+python src/gates/model_gate/model_gate.py --path demo/model_safe.safetensors --json
+if ($LASTEXITCODE -ne 0) { throw "G4 safe failed" }
+python src/gates/model_gate/model_gate.py --path demo/insecure/model_unsafe.pkl --json 2>$null
+if ($LASTEXITCODE -eq 0) { throw "G4 pkl must fail" }
+
+Write-Host "=== stage 0-1: basic + G4/G5 checks OK ==="

@@ -1,5 +1,5 @@
-# CI — проверки на PR/верификации. GitHub-hosted runner (фикс. образ ubuntu-22.04).
-# Принцип каждой гейт-джобы: «чистое проходит / плохое блокируется» (две проверки).
+# CI — проверки на PR/верификации. GitHub-hosted runner (ubuntu-22.04).
+# Гейты и шаги перенесены с ветки sasha1; см. docs/Rina_todo.md этап 1.
 name: ci
 
 on:
@@ -23,7 +23,11 @@ jobs:
           python -m py_compile \
             core/*.py \
             src/api/main.py \
-            src/gates/*/*.py \
+            src/gates/data_gate/data_gate.py \
+            src/gates/code_gate/code_gate.py \
+            src/gates/dependency_gate/dependency_gate.py \
+            src/gates/model_gate/model_gate.py \
+            src/gates/registry_gate/registry_gate.py \
             src/ingest_dataset/ingest_dataset.py \
             src/run_data_checks/run_data_checks.py \
             src/serve/app.py src/serve/attack_sim.py \
@@ -43,8 +47,8 @@ jobs:
       - name: poisoned is blocked
         run: |
           if python src/gates/data_gate/data_gate.py --path data/train_m1_poisoned.csv --json; then
-            echo "G1 не сработал на приманке"; exit 1
-          else echo "ok, заблокировано"; fi
+            echo "G1 не сработал на приманке (PII+balance)"; exit 1
+          else echo "ok — отравленный датасет заблокирован"; fi
 
   code-gate:
     runs-on: ubuntu-22.04
@@ -52,12 +56,29 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
-      - run: pip install --no-cache-dir bandit pip-audit
-      # TODO: установить gitleaks. «Чистый» шаг — на src/ ; «плохое» — на demo/insecure/.
-      - name: clean code passes
-        run: python src/gates/code_gate/code_gate.py --path src --stage ci --json || true
-      - name: insecure fixture is flagged
-        run: python src/gates/code_gate/code_gate.py --path demo/insecure --stage ci --json || true
+      - name: install python scanners
+        run: pip install --no-cache-dir bandit pip-audit
+      - name: install gitleaks
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: clean src — PASS (no FAIL checks)
+        run: |
+          result=$(python src/gates/code_gate/code_gate.py --path src --stage ci --json)
+          echo "$result"
+          echo "$result" | python -c "
+          import json,sys
+          r=json.load(sys.stdin)
+          for c in r['checks']:
+              if c['status']=='FAIL':
+                  print('FAIL в чистом коде:', c); sys.exit(1)
+          "
+      - name: insecure fixture — FAIL (CVE in requirements)
+        run: |
+          if python src/gates/code_gate/code_gate.py --path demo/insecure --stage ci --json; then
+            echo "G2 не обнаружил уязвимости в demo/insecure"; exit 1
+          else echo "ok — небезопасный код заблокирован"; fi
 
   dependency-gate:
     runs-on: ubuntu-22.04
@@ -70,15 +91,75 @@ jobs:
       - name: typosquat is blocked
         run: |
           if python src/gates/dependency_gate/dependency_gate.py --path demo/insecure/requirements_vuln.txt --json; then
-            echo "G3 не сработал на pytirch"; exit 1
-          else echo "ok, заблокировано"; fi
+            echo "G3 не сработал на pytirch/tenserflew"; exit 1
+          else echo "ok — typosquat заблокирован"; fi
+
+  model-gate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: install model scanners
+        run: pip install --no-cache-dir modelscan picklescan
+      - name: generate demo model fixtures
+        run: python demo/insecure/make_model_fixtures.py
+      - name: safe safetensors passes
+        run: python src/gates/model_gate/model_gate.py --path demo/model_safe.safetensors --json
+      - name: unsafe pkl is blocked
+        run: |
+          if python src/gates/model_gate/model_gate.py --path demo/insecure/model_unsafe.pkl --json; then
+            echo "G4 не заблокировал .pkl"; exit 1
+          else echo "ok — .pkl заблокирован"; fi
+
+  registry-gate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: complete card passes
+        run: python src/gates/registry_gate/registry_gate.py --card demo/model_card_complete.json --json
+      - name: incomplete card is blocked
+        run: |
+          if python src/gates/registry_gate/registry_gate.py --card demo/insecure/model_card_incomplete.json --json; then
+            echo "G5 не заблокировал неполный паспорт"; exit 1
+          else echo "ok — неполный паспорт заблокирован"; fi
 
   db-smoke:
     runs-on: ubuntu-22.04
-    # Скелет tests/smoke_db.py — без Postgres на GitHub-hosted (этап 0)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
       - name: smoke_db skeleton
         run: python tests/smoke_db.py
+
+  build-gates:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: build gate images
+        run: docker compose -f infra/docker-compose.gates.yml build
+      - name: generate model fixtures
+        run: python demo/insecure/make_model_fixtures.py
+      - name: smoke dependency gate in container
+        run: |
+          docker run --rm --network none \
+            -v "$PWD/demo/requirements_clean.txt:/in/requirements.txt:ro" \
+            mlsec-gate-dependency --path /in/requirements.txt --json
+          if docker run --rm --network none \
+            -v "$PWD/demo/insecure/requirements_vuln.txt:/in/requirements.txt:ro" \
+            mlsec-gate-dependency --path /in/requirements.txt --json; then
+            echo "G3 container: bad req must fail"; exit 1
+          else echo "ok — G3 blocked in container"; fi
+      - name: smoke model gate in container
+        run: |
+          docker run --rm --network none \
+            -v "$PWD/demo/model_safe.safetensors:/in/model.safetensors:ro" \
+            mlsec-gate-model --path /in/model.safetensors --json
+          if docker run --rm --network none \
+            -v "$PWD/demo/insecure/model_unsafe.pkl:/in/model.pkl:ro" \
+            mlsec-gate-model --path /in/model.pkl --json; then
+            echo "G4 container: pkl must fail"; exit 1
+          else echo "ok — G4 blocked in container"; fi

@@ -1,0 +1,7 @@
+{
+  "_comment": "DEMO-ФИКСТУРА: паспорт без обязательных полей owner/tier/lineage → G5 FAIL (#20, #23)",
+  "name": "fraud-detector-demo",
+  "version": "0.1.0",
+  "purpose": "Детектирование мошенничества",
+  "source": "external"
+}
