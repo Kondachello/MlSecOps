@@ -38,6 +38,35 @@ TOKEN_TTL_HOURS = int(os.getenv("TOKEN_TTL_HOURS", "8"))
 
 ROLES = {"DS", "DE", "MLSecOps", "Product", "CEO"}
 
+# Уровни доступа ролей (клиренс) — для контролируемого шаринга артефактов MLflow.
+# Старшая роль видит то, что расшарили младшие (read-down): clearance(зритель) >= уровень артефакта.
+# DS/DE — базовый рабочий уровень; MLSecOps выше (надзор); CEO — максимум.
+ROLE_LEVEL = {"DS": 1, "DE": 1, "Product": 2, "MLSecOps": 3, "CEO": 4}
+
+
+def clearance(roles) -> int:
+    """Максимальный уровень доступа среди ролей пользователя (0, если ролей нет)."""
+    return max((ROLE_LEVEL.get(r, 0) for r in roles), default=0)
+
+
+def can_view_artifact(acl: dict, username: str, roles) -> bool:
+    """Может ли пользователь видеть артефакт (MLflow-сессию) согласно его ACL.
+
+    Политика (docs/18_MLFLOW.md, шаринг артефактов):
+    - владелец видит свой артефакт всегда;
+    - приватный (share_status != 'shared') — только владельцу;
+    - расшаренный с кастомным списком ролей (share_roles) — только этим ролям;
+    - расшаренный по клиренсу (share_level) — ролям с clearance >= share_level (read-down).
+    """
+    if acl.get("owner") == username:
+        return True
+    if acl.get("share_status") != "shared":
+        return False
+    custom = acl.get("share_roles")
+    if custom:
+        return any(r in custom for r in roles)
+    return clearance(roles) >= (acl.get("share_level") or 0)
+
 
 class AuthError(Exception):
     """401/403 — нет валидной личности или прав. Вызывающий пишет event(access_denied)."""

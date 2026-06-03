@@ -214,6 +214,87 @@ def tab_mlflow():
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
+def _share_badge(a: dict) -> str:
+    if a.get("share_status") != "shared":
+        return "🔒 приватный"
+    if a.get("share_roles"):
+        return f"🔗 роли: {', '.join(a['share_roles'])}"
+    return f"🔗 клиренс ≥ {a.get('share_level')}"
+
+
+def tab_artifacts():
+    st.subheader("Мои артефакты (сессии разработки MLflow)")
+    st.caption("Каждый ран = сессия (data+код+модель). По умолчанию приватен. Чтобы расшарить — "
+               "сначала пройди security check, затем выбери видимость.")
+    try:
+        data = api_get("/api/v1/artifacts?", timeout=30).json()
+    except Exception as e:
+        st.error(f"Не удалось получить артефакты: {e}")
+        return
+    mine = data.get("mine", [])
+    shared = data.get("shared_with_me", [])
+    st.caption(f"Твой клиренс: {data.get('my_clearance')}")
+
+    if not mine:
+        st.info("Своих ранов пока нет. Залогируй сессию через ноутбук/мок "
+                "(examples/dev_train_mock.py) — они появятся здесь.")
+    for a in mine:
+        rid = a["run_id"]
+        title = f"{a.get('run_name') or rid[:8]} — {_share_badge(a)} · check: {a.get('check_status')}"
+        with st.expander(title):
+            st.write(f"**run_id:** `{rid}`  ·  **эксперимент:** {a.get('experiment')}")
+            if a.get("metrics"):
+                st.caption("метрики: " + ", ".join(f"{k}={v}" for k, v in a["metrics"].items()))
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                if st.button("🛡 Запустить security check", key=f"chk_{rid}"):
+                    r = api_post(f"/api/v1/artifacts/{rid}/check", timeout=60)
+                    if r.status_code == 200:
+                        res = r.json()
+                        if res["check_status"] == "passed":
+                            st.success("✅ Проверка пройдена (placeholder)")
+                        else:
+                            st.error("❌ Проверка не пройдена")
+                        st.json(res["result"])
+                        _rerun()
+                    else:
+                        st.error(r.json().get("detail", r.text))
+            with c2:
+                custom = st.multiselect("Кастомные роли (опц.)", ALL_ROLES, key=f"roles_{rid}")
+                if st.button("🔗 Поделиться", key=f"shr_{rid}",
+                             disabled=a.get("check_status") != "passed"):
+                    payload = {"roles": custom or None}
+                    r = api_post(f"/api/v1/artifacts/{rid}/share", json=payload)
+                    if r.status_code == 200:
+                        st.success(f"Расшарено: {r.json()}")
+                        _rerun()
+                    else:
+                        st.error(r.json().get("detail", r.text))
+                if a.get("check_status") != "passed":
+                    st.caption("Шаринг откроется после успешной проверки.")
+            with c3:
+                if a.get("share_status") == "shared" and st.button("🔒 Снять шаринг",
+                                                                   key=f"uns_{rid}"):
+                    r = api_post(f"/api/v1/artifacts/{rid}/unshare")
+                    if r.status_code == 200:
+                        st.info("Снова приватный.")
+                        _rerun()
+                    else:
+                        st.error(r.json().get("detail", r.text))
+
+    st.divider()
+    st.markdown("#### 📥 Доступно мне (расшарили другие)")
+    if not shared:
+        st.caption("Пока ничего не расшарено вам.")
+    else:
+        st.dataframe(
+            [{"run": s.get("run_name") or s["run_id"][:8], "owner": s.get("owner"),
+              "эксперимент": s.get("experiment"), "видимость": _share_badge(s)}
+             for s in shared],
+            use_container_width=True, hide_index=True,
+        )
+
+
 def tab_events():
     st.subheader("История событий (Audit Trail)")
     st.caption("Цепочка событий с hash-chain (актор = серверная личность из токена).")
@@ -305,6 +386,7 @@ def render_app():
     st.title("🛡️ MLSecOps Platform")
 
     tabs_spec = [("Личный кабинет", tab_cabinet),
+                 ("Мои артефакты", lambda r=None: tab_artifacts()),
                  ("MLflow раны", lambda r=None: tab_mlflow()),
                  ("Сканеры", lambda r=None: tab_scanners()),
                  ("История событий", lambda r=None: tab_events())]

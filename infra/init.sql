@@ -113,6 +113,31 @@ CREATE TABLE IF NOT EXISTS dataset_access (
     PRIMARY KEY (user_id, dataset_name, dataset_version)
 );
 
+-- ───────────────────────── Владение и ACL артефактов MLflow ─────────────────────────
+-- Приватность по умолчанию + контролируемый шаринг (docs/18_MLFLOW.md).
+CREATE TABLE IF NOT EXISTS experiment_owner (
+    experiment_id TEXT PRIMARY KEY,        -- MLflow experiment_id
+    owner         TEXT NOT NULL,           -- первый писатель = владелец (штамп прокси)
+    created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS artifact_acl (
+    run_id        TEXT PRIMARY KEY,        -- MLflow run = «сессия разработки»
+    experiment_id TEXT NOT NULL,
+    owner         TEXT NOT NULL,           -- кто залогировал ран (штамп прокси)
+    session_name  TEXT,
+    check_status  TEXT NOT NULL DEFAULT 'none'
+                  CHECK (check_status IN ('none','pending','passed','failed')),
+    check_detail  JSONB,                   -- результат security check (плейсхолдер)
+    share_status  TEXT NOT NULL DEFAULT 'private'
+                  CHECK (share_status IN ('private','shared')),
+    share_level   INTEGER,                 -- клиренс-уровень видимости (NULL пока приватный)
+    share_roles   JSONB,                   -- кастомные роли (переопределяют share_level)
+    shared_by     TEXT,
+    created_at    TIMESTAMPTZ DEFAULT now(),
+    updated_at    TIMESTAMPTZ DEFAULT now()
+);
+
 -- ───────── Append-only: отозвать UPDATE/DELETE на events у роли приложения ─────────
 -- Выполнить ПОСЛЕ создания роли mlsec_app (см. .env / docker-compose):
 -- REVOKE UPDATE, DELETE ON events FROM mlsec_app;

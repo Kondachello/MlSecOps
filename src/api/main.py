@@ -81,6 +81,13 @@ class GrantAccessRequest(BaseModel):
     can_export: bool = False
 
 
+class ShareRequest(BaseModel):
+    # roles=None → шаринг по клиренсу роли владельца (read-down, дефолт);
+    # roles=[...] → кастомный список ролей (переопределяет клиренс).
+    roles: Optional[list[str]] = None
+    reason: Optional[str] = None
+
+
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "")
 GITHUB_REF = os.getenv("GITHUB_REF", "sasha")
@@ -102,6 +109,37 @@ def _require(request, role: str) -> str:
                      details={"required_role": role})
         raise HTTPException(403, f"user '{username}' lacks role '{role}'")
     return username
+
+
+def _current_user(request) -> str:
+    """current_user → 401 при отсутствии личности (для не-RBAC ручек)."""
+    try:
+        return identity.current_user(request)
+    except identity.AuthError as e:
+        raise HTTPException(401, str(e))
+
+
+def _primary_role(username: str) -> str:
+    roles = sorted(identity.get_roles(username))
+    return roles[0] if roles else "none"
+
+
+def _ensure_artifact(run_id: str):
+    """Вернуть (acl, run_meta) для рана; лениво регистрирует владение по данным MLflow.
+
+    Владелец берётся из неподделываемого серверного тега (mlsecops.owner), который
+    штампует прокси на runs/create. (acl, meta) = (None, None) если рана нет в MLflow.
+    """
+    from core import mlflow_utils
+    acl = db.get_artifact_acl(run_id)
+    meta = mlflow_utils.get_run(run_id)
+    if acl is None:
+        if not meta:
+            return None, None
+        db.upsert_artifact(run_id, meta.get("experiment_id", ""), meta.get("owner", ""),
+                           session_name=meta.get("run_name"))
+        acl = db.get_artifact_acl(run_id)
+    return acl, meta
 
 
 if app:
@@ -180,6 +218,110 @@ if app:
     def list_runs(model: str):
         """Раны модели из MLflow. TODO: mlflow_utils.list_runs(model)."""
         return {"runs": []}  # TODO
+
+    # ---- артефакты MLflow: приватность по умолчанию + контролируемый шаринг ----
+    # Разработчик работает в IDE через MLflow (свой эксперимент = «аккаунт»). Сервис
+    # подтягивает его раны (= сессии разработки: data+код+модель) и даёт по кнопке
+    # запустить security check, после чего — расшарить (по клиренсу роли или кастомным ролям).
+    @app.get("/api/v1/artifacts")
+    def list_artifacts(request: Request):
+        """Артефакты (сессии) пользователя: свои + расшаренные ему. Видимость по clearance/ролям."""
+        user = _current_user(request)
+        roles = sorted(identity.get_roles(user))
+        from core import mlflow_utils
+        runs = mlflow_utils.list_recent_runs(200)
+        acls = db.list_artifact_acls([r["run_id"] for r in runs])
+        # Ленивая регистрация владения для ещё не отслеживаемых ранов — ОДНОЙ транзакцией.
+        new_rows = [(r["run_id"], r.get("experiment_id", ""), r.get("owner") or "",
+                     r.get("run_name"))
+                    for r in runs if r["run_id"] not in acls]
+        db.upsert_artifacts_bulk(new_rows)
+        mine, shared = [], []
+        for r in runs:
+            rid = r["run_id"]
+            acl = acls.get(rid)
+            if acl is None:
+                owner = r.get("owner") or ""
+                acl = {"owner": owner, "share_status": "private", "check_status": "none",
+                       "share_level": None, "share_roles": None}
+            enriched = {**r, "owner": acl["owner"], "check_status": acl.get("check_status"),
+                        "share_status": acl.get("share_status"),
+                        "share_level": acl.get("share_level"),
+                        "share_roles": acl.get("share_roles")}
+            if acl["owner"] == user:
+                mine.append(enriched)
+            elif identity.can_view_artifact(acl, user, roles):
+                shared.append(enriched)
+        return {"mine": mine, "shared_with_me": shared,
+                "my_clearance": identity.clearance(roles)}
+
+    @app.post("/api/v1/artifacts/{run_id}/check")
+    def artifact_check(run_id: str, request: Request):
+        """Запустить security check артефакта (ПЛЕЙСХОЛДЕР). Только владелец. Пишет статус+событие."""
+        user = _current_user(request)
+        acl, meta = _ensure_artifact(run_id)
+        if acl is None:
+            raise HTTPException(404, "run not found in MLflow")
+        if acl["owner"] != user:
+            db.log_event(user, _primary_role(user), "access_denied", asset=run_id,
+                         result="blocked", reason="not artifact owner")
+            raise HTTPException(403, "только владелец артефакта может запускать проверку")
+        from core import security_check
+        db.set_check_status(run_id, "pending")
+        result = security_check.run_artifact_check(run_id, meta)
+        status = "passed" if result["passed"] else "failed"
+        db.set_check_status(run_id, status, result)
+        db.log_event(user, _primary_role(user), "artifact_security_check", asset=run_id,
+                     result="ok" if result["passed"] else "blocked",
+                     reason="placeholder security check",
+                     details={"check_status": status, "passed": result["passed"]})
+        return {"run_id": run_id, "check_status": status, "result": result}
+
+    @app.post("/api/v1/artifacts/{run_id}/share")
+    def artifact_share(run_id: str, req: ShareRequest, request: Request):
+        """Расшарить артефакт. Только владелец и только после успешного security check.
+
+        roles=None → по клиренсу роли владельца (read-down); roles=[...] → кастомный список.
+        """
+        user = _current_user(request)
+        roles = sorted(identity.get_roles(user))
+        acl, _ = _ensure_artifact(run_id)
+        if acl is None:
+            raise HTTPException(404, "run not found in MLflow")
+        if acl["owner"] != user:
+            db.log_event(user, _primary_role(user), "access_denied", asset=run_id,
+                         result="blocked", reason="not artifact owner")
+            raise HTTPException(403, "только владелец артефакта может его расшаривать")
+        if acl.get("check_status") != "passed":
+            raise HTTPException(409, "сначала пройдите security check (кнопка «Проверить»)")
+        custom, level = None, None
+        if req.roles:
+            for r in req.roles:
+                if r not in identity.ROLES:
+                    raise HTTPException(400, f"unknown role {r}")
+            custom = sorted(set(req.roles))
+        else:
+            level = identity.clearance(roles)
+        db.share_artifact(run_id, level=level, roles=custom, shared_by=user)
+        db.log_event(user, _primary_role(user), "artifact_shared", asset=run_id, result="ok",
+                     reason=req.reason or "shared via cabinet",
+                     details={"level": level, "roles": custom})
+        return {"run_id": run_id, "share_status": "shared",
+                "share_level": level, "share_roles": custom}
+
+    @app.post("/api/v1/artifacts/{run_id}/unshare")
+    def artifact_unshare(run_id: str, request: Request):
+        """Снять шаринг — артефакт снова приватный. Только владелец."""
+        user = _current_user(request)
+        acl, _ = _ensure_artifact(run_id)
+        if acl is None:
+            raise HTTPException(404, "run not found in MLflow")
+        if acl["owner"] != user:
+            raise HTTPException(403, "только владелец артефакта может снять шаринг")
+        db.unshare_artifact(run_id)
+        db.log_event(user, _primary_role(user), "artifact_unshared", asset=run_id, result="ok",
+                     reason="unshared via cabinet")
+        return {"run_id": run_id, "share_status": "private"}
 
     # ---- датасеты ----
     @app.post("/api/v1/datasets/ingest")

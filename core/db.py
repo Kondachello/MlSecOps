@@ -191,6 +191,27 @@ CREATE TABLE IF NOT EXISTS dataset_access (
     ts              TEXT DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, dataset_name, dataset_version)
 );
+CREATE TABLE IF NOT EXISTS experiment_owner (
+    experiment_id TEXT PRIMARY KEY,       -- MLflow experiment_id
+    owner         TEXT NOT NULL,          -- первый писатель = владелец (серверный штамп прокси)
+    created_at    TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS artifact_acl (
+    run_id        TEXT PRIMARY KEY,       -- MLflow run = «сессия разработки» (data+код+модель)
+    experiment_id TEXT NOT NULL,
+    owner         TEXT NOT NULL,          -- кто залогировал ран (серверный штамп прокси)
+    session_name  TEXT,
+    check_status  TEXT NOT NULL DEFAULT 'none'
+                  CHECK (check_status IN ('none','pending','passed','failed')),
+    check_detail  TEXT,                   -- JSON: результат security check (плейсхолдер)
+    share_status  TEXT NOT NULL DEFAULT 'private'
+                  CHECK (share_status IN ('private','shared')),
+    share_level   INTEGER,                -- клиренс-уровень видимости (NULL пока приватный)
+    share_roles   TEXT,                   -- JSON-список кастомных ролей (переопределяет share_level)
+    shared_by     TEXT,
+    created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TEXT DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -424,6 +445,144 @@ def has_dataset_access(user_id: int, dataset_name: str, dataset_version: str) ->
         return cur.fetchone() is not None
 
 
+# --- владение и ACL артефактов MLflow (приватность + контролируемый шаринг) ---
+# Единица владения — эксперимент на разработчика; единица шаринга — ран (сессия
+# разработки: data+код+модель в одном ноутбуке). Владелец проставляется СЕРВЕРНО
+# (auth-прокси штампует X-Authenticated-User → owner). См. docs/18_MLFLOW.md.
+def set_experiment_owner(experiment_id: str, owner: str) -> None:
+    """Зафиксировать владельца эксперимента (первый писатель; идемпотентно, без перезаписи)."""
+    with _tx(commit=True) as cur:
+        cur.execute(
+            _sql("INSERT INTO experiment_owner (experiment_id, owner) VALUES (?, ?) "
+                 "ON CONFLICT (experiment_id) DO NOTHING"),
+            (experiment_id, owner))
+
+
+def get_experiment_owner(experiment_id: str) -> Optional[str]:
+    """Владелец эксперимента или None."""
+    with _tx() as cur:
+        cur.execute(_sql("SELECT owner FROM experiment_owner WHERE experiment_id = ?"),
+                    (experiment_id,))
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def list_owned_experiments(owner: str) -> set[str]:
+    """experiment_id всех экспериментов, которыми владеет пользователь."""
+    with _tx() as cur:
+        cur.execute(_sql("SELECT experiment_id FROM experiment_owner WHERE owner = ?"),
+                    (owner,))
+        return {r[0] for r in cur.fetchall()}
+
+
+def upsert_artifact(run_id: str, experiment_id: str, owner: str,
+                    session_name: Optional[str] = None) -> None:
+    """Зарегистрировать ран (сессию) в ACL при первом появлении (владелец не перезаписывается).
+
+    Идемпотентно: если запись есть — обновляем только session_name (если передан).
+    """
+    with _tx(commit=True) as cur:
+        cur.execute(
+            _sql("""INSERT INTO artifact_acl (run_id, experiment_id, owner, session_name)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT (run_id) DO UPDATE SET
+                        session_name = COALESCE(excluded.session_name, artifact_acl.session_name)"""),
+            (run_id, experiment_id, owner, session_name))
+
+
+def upsert_artifacts_bulk(rows: list[tuple]) -> None:
+    """Пакетно зарегистрировать раны в ACL ОДНОЙ транзакцией (rows = [(run_id, exp_id, owner, name)]).
+
+    Нужно для ленивой регистрации при листинге: иначе N×(connect+commit) на Windows
+    легко перевалит за таймаут UI. Владелец существующих строк не перезаписывается.
+    """
+    if not rows:
+        return
+    with _tx(commit=True) as cur:
+        cur.executemany(
+            _sql("""INSERT INTO artifact_acl (run_id, experiment_id, owner, session_name)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT (run_id) DO UPDATE SET
+                        session_name = COALESCE(excluded.session_name, artifact_acl.session_name)"""),
+            rows)
+
+
+def _acl_row_to_dict(r) -> dict:
+    return {
+        "run_id": r[0], "experiment_id": r[1], "owner": r[2], "session_name": r[3],
+        "check_status": r[4], "check_detail": _json_load(r[5]),
+        "share_status": r[6], "share_level": r[7],
+        "share_roles": _json_load(r[8]), "shared_by": r[9],
+    }
+
+
+_ACL_COLS = ("run_id, experiment_id, owner, session_name, check_status, check_detail, "
+             "share_status, share_level, share_roles, shared_by")
+
+
+def get_artifact_acl(run_id: str) -> Optional[dict]:
+    """ACL артефакта (рана) или None, если он ещё не зарегистрирован."""
+    with _tx() as cur:
+        cur.execute(_sql(f"SELECT {_ACL_COLS} FROM artifact_acl WHERE run_id = ?"), (run_id,))
+        row = cur.fetchone()
+    return _acl_row_to_dict(row) if row else None
+
+
+def list_artifact_acls(run_ids: Optional[list[str]] = None) -> dict[str, dict]:
+    """ACL по списку run_id (или все, если run_ids=None) → {run_id: acl}."""
+    with _tx() as cur:
+        if run_ids is None:
+            cur.execute(_sql(f"SELECT {_ACL_COLS} FROM artifact_acl"))
+        elif not run_ids:
+            return {}
+        else:
+            ph = ",".join("?" * len(run_ids))
+            cur.execute(_sql(f"SELECT {_ACL_COLS} FROM artifact_acl WHERE run_id IN ({ph})"),
+                        tuple(run_ids))
+        rows = cur.fetchall()
+    return {r[0]: _acl_row_to_dict(r) for r in rows}
+
+
+def list_shared_acls() -> list[dict]:
+    """Все расшаренные артефакты (для вычисления видимых экспериментов на прокси)."""
+    with _tx() as cur:
+        cur.execute(_sql(f"SELECT {_ACL_COLS} FROM artifact_acl WHERE share_status = 'shared'"))
+        return [_acl_row_to_dict(r) for r in cur.fetchall()]
+
+
+def set_check_status(run_id: str, status: str, detail: Optional[dict] = None) -> None:
+    """Записать результат security check артефакта (none|pending|passed|failed)."""
+    assert status in {"none", "pending", "passed", "failed"}, status
+    with _tx(commit=True) as cur:
+        cur.execute(
+            _sql("UPDATE artifact_acl SET check_status = ?, check_detail = ?, "
+                 "updated_at = CURRENT_TIMESTAMP WHERE run_id = ?"),
+            (status, _json_param(detail), run_id))
+
+
+def share_artifact(run_id: str, *, level: Optional[int], roles: Optional[list[str]],
+                   shared_by: str) -> None:
+    """Расшарить артефакт: либо по клиренс-уровню (level), либо кастомным ролям (roles).
+
+    Контроль «прошёл ли security check» — на стороне вызывающего (API).
+    """
+    with _tx(commit=True) as cur:
+        cur.execute(
+            _sql("UPDATE artifact_acl SET share_status = 'shared', share_level = ?, "
+                 "share_roles = ?, shared_by = ?, updated_at = CURRENT_TIMESTAMP "
+                 "WHERE run_id = ?"),
+            (level, _json_param(roles) if roles else None, shared_by, run_id))
+
+
+def unshare_artifact(run_id: str) -> None:
+    """Снять шаринг — артефакт снова приватный (виден только владельцу)."""
+    with _tx(commit=True) as cur:
+        cur.execute(
+            _sql("UPDATE artifact_acl SET share_status = 'private', share_level = NULL, "
+                 "share_roles = NULL, updated_at = CURRENT_TIMESTAMP WHERE run_id = ?"),
+            (run_id,))
+
+
 # --- демо/самопроверка -------------------------------------------------------
 if __name__ == "__main__":
     # Короткий сценарий: чистая sqlite-БД → регистрация → роль → доступ →
@@ -473,3 +632,37 @@ if __name__ == "__main__":
     print(f"5) после ручной правки строки id=2: verify_chain() = {chk2}")
     print(f"   -> разрыв цепочки обнаружен на id={chk2['broken_at']}: "
           f"{'OK, защита работает' if not chk2['ok'] else 'ОШИБКА: подделка не замечена'}")
+
+    # 6) ACL артефактов MLflow: владение → security check → шаринг → видимость.
+    # Политику видимости дублируем локально (полная версия — core.identity.can_view_artifact),
+    # чтобы демо запускалось и как `python core/db.py`, и как `python -m core.db`.
+    _lvl = {"DS": 1, "DE": 1, "Product": 2, "MLSecOps": 3, "CEO": 4}
+
+    def _can_view(acl, user, roles):
+        if acl.get("owner") == user:
+            return True
+        if acl.get("share_status") != "shared":
+            return False
+        if acl.get("share_roles"):
+            return any(r in acl["share_roles"] for r in roles)
+        return max((_lvl.get(r, 0) for r in roles), default=0) >= (acl.get("share_level") or 0)
+
+    set_experiment_owner("exp-1", "vasya")          # эксперимент vasya
+    upsert_artifact("run-1", "exp-1", "vasya", "fraud-session")
+    print(f"\n6) artifact_acl(run-1) = {get_artifact_acl('run-1')['share_status']}/"
+          f"{get_artifact_acl('run-1')['check_status']} (приватный, не проверен)")
+    print(f"   petya(DS) видит приватный run-1: "
+          f"{_can_view(get_artifact_acl('run-1'), 'petya', ['DS'])} (ожидаем False)")
+    set_check_status("run-1", "passed", {"passed": True, "placeholder": True})
+    share_artifact("run-1", level=1, roles=None, shared_by="vasya")
+    acl = get_artifact_acl("run-1")
+    print(f"   после check+share(L{acl['share_level']}): petya(DS) видит = "
+          f"{_can_view(acl, 'petya', ['DS'])} (ожидаем True);  "
+          f"ceo видит = {_can_view(acl, 'ceo', ['CEO'])} (ожидаем True)")
+    upsert_artifact("run-2", "exp-1", "vasya", "secret-session")
+    set_check_status("run-2", "passed")
+    share_artifact("run-2", level=None, roles=["Product"], shared_by="vasya")
+    acl2 = get_artifact_acl("run-2")
+    print(f"   кастомный шаринг run-2 ролям {acl2['share_roles']}: "
+          f"DS видит = {_can_view(acl2, 'x', ['DS'])} (False), "
+          f"Product видит = {_can_view(acl2, 'x', ['Product'])} (True)")

@@ -9,6 +9,13 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+# FAIL-FAST: если MLflow недоступен, его REST-клиент по умолчанию ретраит ~2 минуты
+# (грабли HANDOFF, урок №3) — и наши ручки (/artifacts) висят до таймаута UI. Ставим
+# короткие таймаут/ретраи ДО первого импорта mlflow, чтобы при лежащем MLflow быстро
+# отдать пусто, а не блокировать запрос. Перебить можно через окружение.
+os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "5")
+os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "1")
+
 # Бэкенд ходит в MLflow server-side НАПРЯМУЮ (он доверенный), минуя собственный /mlflow-прокси.
 # Для дев это локальный mlflow server; в проде — внутренний адрес MLflow за прокси.
 MLFLOW_UPSTREAM_URL = os.getenv("MLFLOW_UPSTREAM_URL",
@@ -37,21 +44,42 @@ def list_recent_runs(limit: int = 50) -> list[dict]:
                              max_results=limit, order_by=["start_time DESC"])
     except Exception:
         return []
-    out = []
-    for r in runs:
-        tags = r.data.tags or {}
-        out.append({
-            "run_id": r.info.run_id,
-            "experiment": by_id.get(r.info.experiment_id, r.info.experiment_id),
-            "run_name": tags.get("mlflow.runName", ""),
-            # личность: серверный штамп прокси (если проставлен) либо mlflow.user
-            "user": tags.get("mlflow.user", r.info.user_id or ""),
-            "status": r.info.status,
-            "start_time": r.info.start_time,
-            "metrics": dict(r.data.metrics),
-            "params": dict(r.data.params),
-        })
+    out = [_run_to_dict(r, by_id) for r in runs]
     return out
+
+
+# Серверный тег владельца, который проставляет auth-прокси на runs/create.
+OWNER_TAG = "mlsecops.owner"
+
+
+def _run_to_dict(r, by_id: Optional[dict] = None) -> dict:
+    """Плоский dict рана для UI/бэкенда (с experiment_id и неподделываемым owner-тегом)."""
+    tags = r.data.tags or {}
+    exp_id = r.info.experiment_id
+    return {
+        "run_id": r.info.run_id,
+        "experiment_id": exp_id,
+        "experiment": (by_id or {}).get(exp_id, exp_id),
+        "run_name": tags.get("mlflow.runName", ""),
+        # владелец: серверный штамп прокси (mlsecops.owner) — неподделываем; fallback на mlflow.user
+        "owner": tags.get(OWNER_TAG) or tags.get("mlflow.user") or (r.info.user_id or ""),
+        "user": tags.get("mlflow.user", r.info.user_id or ""),
+        "status": r.info.status,
+        "start_time": r.info.start_time,
+        "metrics": dict(r.data.metrics),
+        "params": dict(r.data.params),
+    }
+
+
+def get_run(run_id: str) -> Optional[dict]:
+    """Метаданные одного рана (плоский dict) или None, если ран/MLflow недоступен."""
+    try:
+        c = _client()
+        r = c.get_run(run_id)
+        exp = c.get_experiment(r.info.experiment_id)
+        return _run_to_dict(r, {r.info.experiment_id: exp.name})
+    except Exception:
+        return None
 
 
 def list_models() -> list[dict]:
