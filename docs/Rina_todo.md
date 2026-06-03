@@ -147,21 +147,22 @@ docker images
 
 ---
 
-## 0.5 — Runner в `infra/docker-compose.yml` (согласовать с инфра)
+## 0.5 — Runner (два режима)
 
-- [x] В `.env` (не коммитить): `GITHUB_REPO`, `GITHUB_TOKEN`, **`REPO_URL`**, **`ACCESS_TOKEN`** (= тот же PAT), `RUNNER_NAME`
-  - Важно: `myoung34/github-runner` читает `REPO_URL`/`ACCESS_TOKEN` из `env_file`, не из `${GITHUB_*}` в compose (иначе подставляется `change_me`).
-- [x] Поднять runner: `docker compose -f infra/docker-compose.yml up -d ci-runner`
-- [ ] В GitHub → Settings → Actions → Runners: статус **Idle**
-  - Если в логах `curl … 403` / `Invalid configuration provided for token`: PAT без прав на registration-token.
-  - **Classic PAT:** scope `repo` (полный доступ к private repo) + `workflow`.
-  - **Fine-grained PAT:** Repository access = `Kondachello/MlSecOps`, Permission **Administration** = Read and write.
-  - Альтернатива: Settings → Actions → Runners → New → скопировать одноразовый token → `RUNNER_TOKEN=...` в `.env` (короткоживущий).
+### A) GitHub-hosted runner (ваш режим) — без своего Docker ci-runner
 
-**Коллегам (инфра/лид):**  
-«Нужен PAT для runner и label `self-hosted`. Репозиторий: `<url>`. Без runner workflow зависнут в queued».
+- [x] `.env`: `GITHUB_REPO`, `GITHUB_TOKEN`, `GITHUB_REF=Rina`
+- [x] В workflow: `runs-on: ubuntu-latest` (облачный runner GitHub, не `self-hosted`)
+- [x] **Не нужен** `docker compose … ci-runner` и Admin на Settings → Runners
+- [ ] Запуск: **Actions → ci → Run workflow** → ветка **Rina**
+- [ ] Локально гейты: `bash scripts/ci/check_local.sh`
 
-**Когда запускать CI:** после этого этапа — первый `workflow_dispatch` на `ci.yml`.
+**Коллегам:** «CI на GitHub-hosted; ветка `Rina`. Self-hosted в compose — позже, если инфра попросит».
+
+### B) Свой runner в Docker (нужен Admin на репо)
+
+- `REPO_URL`, `ACCESS_TOKEN`, `RUNNER_NAME` в `.env` → `docker compose -f infra/docker-compose.yml up -d ci-runner`
+- Classic PAT `repo`+`workflow` или `RUNNER_TOKEN` от владельца.
 
 ---
 
@@ -178,7 +179,7 @@ docker images
 
 - [ ] **Ты:** G1 clean/bad локально (`check_local.sh` или вручную)
 - [x] `scripts/ci/` в репозитории
-- [ ] **Ты:** runner в GitHub Idle **или** записан блокер (нет PAT / нет Docker)
+- [ ] **Ты:** runner **Idle** в репо (инфра) **или** локально `check_local.sh` OK; свой `ci-runner` — опционально
 
 ---
 
