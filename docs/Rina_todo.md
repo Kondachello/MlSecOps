@@ -147,31 +147,37 @@ docker images
 
 ---
 
-## 0.5 — Runner (два режима)
+## 0.5 — Runner
 
-### A) GitHub-hosted runner (ваш режим) — без своего Docker ci-runner
+**Режим команды: GitHub-hosted** (`runs-on: ubuntu-22.04`). Self-hosted / `ci-runner` в compose — **не используем** на этапе 0.
 
-- [x] `.env`: `GITHUB_REPO`, `GITHUB_TOKEN`, `GITHUB_REF=Rina`
-- [x] В workflow: `runs-on: ubuntu-22.04` (фикс. GitHub-hosted, не `ubuntu-latest` / не `self-hosted`)
-- [x] **Не нужен** `docker compose … ci-runner` и Admin на Settings → Runners
-- [ ] Запуск: **Actions → ci → Run workflow** → ветка **Rina**
-- [ ] Локально гейты: `bash scripts/ci/check_local.sh`
+### A) GitHub-hosted (основной)
 
-**Коллегам:** «CI на GitHub-hosted; ветка `Rina`. Self-hosted в compose — позже, если инфра попросит».
+- [x] `.env` (локально, не в git): `GITHUB_REPO`, `GITHUB_TOKEN`, `GITHUB_REF=Rina`
+- [x] Workflow: `runs-on: ubuntu-22.04` в `ci.yml`, `train.yml`, `deploy.yml` (ветка [Rina](https://github.com/Kondachello/MlSecOps/tree/Rina))
+- [x] **Не нужны:** `docker compose … ci-runner`, Admin, Self-hosted **Idle**, `REPO_URL` / `ACCESS_TOKEN` / `RUNNER_NAME` в `.env`
+- [ ] **Ты:** первый зелёный или осмысленный прогон — **Actions → ci → Run workflow** → ветка **Rina**
+- [ ] **Ты:** G1 локально — `bash scripts/ci/check_local.sh` (или `run_gate_docker.ps1` на Windows)
 
-### B) Свой runner в Docker (нужен Admin на репо)
+**Коллегам:** «CI на GitHub-hosted `ubuntu-22.04`, ветка `Rina`. Облачный runner из коробки; self-hosted в compose — только если инфра позже попросит».
+
+### B) Self-hosted в Docker (запасной, не наш этап 0)
+
+Только если инфра вернёт требование из канона (`docs/12_CICD.md`):
 
 - `REPO_URL`, `ACCESS_TOKEN`, `RUNNER_NAME` в `.env` → `docker compose -f infra/docker-compose.yml up -d ci-runner`
-- Classic PAT `repo`+`workflow` или `RUNNER_TOKEN` от владельца.
+- Admin на репо + classic PAT `repo`+`workflow` или `RUNNER_TOKEN` от владельца
+- В workflow снова `runs-on: self-hosted`
 
 ---
 
 ## 0.6 — `.env.example`
 
-- [x] Добавлены `RUNNER_NAME`, `GATEKEEPER_URL`, `USE_GATEKEEPER`, `CI_SKIP_PREFLIGHT`, комментарии cosign
-- [x] **Ты:** `.env` создан (`REPO_URL`, `ACCESS_TOKEN`, `RUNNER_NAME` — см. 0.5)
+- [x] `GITHUB_REPO`, `GITHUB_TOKEN`, `GATEKEEPER_URL`, `USE_GATEKEEPER`, `CI_SKIP_PREFLIGHT`, cosign (комментарии)
+- [x] Опционально для режима B: `REPO_URL`, `ACCESS_TOKEN`, `RUNNER_NAME`
+- [x] **Ты:** `.env` для режима A — `GITHUB_REPO`, `GITHUB_TOKEN`, `GITHUB_REF=Rina` (без runner-полей)
 
-**Коллегам (бэк):** «Какие URL внутри docker-сети для postgres/mlflow с runner?»
+**Коллегам (бэк):** «`db-smoke` на GitHub-hosted пока без postgres в job — позже `services:` или отключим до готовности API. URL postgres/mlflow для runner не нужны в режиме A».
 
 ---
 
@@ -179,7 +185,8 @@ docker images
 
 - [ ] **Ты:** G1 clean/bad локально (`check_local.sh` или вручную)
 - [x] `scripts/ci/` в репозитории
-- [ ] **Ты:** runner **Idle** в репо (инфра) **или** локально `check_local.sh` OK; свой `ci-runner` — опционально
+- [x] **Runner:** GitHub-hosted `ubuntu-22.04` в workflow (не self-hosted **Idle**)
+- [ ] **Ты:** хотя бы один прогон **ci** на ветке **Rina** (Actions → Run workflow); падение только `db-smoke` — ок для этапа 0, зафиксировать в issue
 
 ---
 
