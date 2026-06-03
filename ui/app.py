@@ -66,6 +66,15 @@ def render():
                 st.error(f"Ошибка: {data.get('detail', resp.text)}")
                 return
 
+            mode = data.get("mode", "local")
+            if mode == "github_actions":
+                repo = data.get("repo", "")
+                st.success("Workflow запущен в GitHub Actions!")
+                if repo:
+                    st.markdown(f"[Открыть GitHub Actions →](https://github.com/{repo}/actions)")
+                return
+
+            # Локальный режим — показываем результат прямо в UI
             report = data["report"]
             passed = report.get("passed", False)
             if passed:

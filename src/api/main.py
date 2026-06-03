@@ -110,14 +110,42 @@ if app:
         """Кнопка 'просканировать ресурс всеми применимыми образами' → запуск гейтов/workflow. TODO."""
         return {"status": "TODO"}
 
-    # ---- CI/CD интеграция (запуск гейтов в процессе) ----
+    # ---- CI/CD интеграция (GitHub Actions + локальный fallback) ----
     @app.post("/api/v1/ci/trigger")
     def trigger_workflow(req: TriggerWorkflowRequest):
-        """Запустить гейт безопасности напрямую."""
+        """Запустить гейт: GitHub Actions если токен задан, иначе локально."""
         allowed = {"data_gate", "code_gate", "dependency_gate"}
         if req.check_type not in allowed:
             raise HTTPException(400, f"check_type must be one of {allowed}")
 
+        # --- GitHub Actions путь ---
+        if GITHUB_TOKEN and GITHUB_REPO and _http:
+            resp = _http.post(
+                f"https://api.github.com/repos/{GITHUB_REPO}/dispatches",
+                headers={
+                    "Authorization": f"Bearer {GITHUB_TOKEN}",
+                    "Accept": "application/vnd.github.v3+json",
+                },
+                json={
+                    "event_type": "run-security-scan",
+                    "client_payload": {
+                        "check_type": req.check_type,
+                        "target": req.target,
+                        "ref": GITHUB_REF,
+                    },
+                },
+                timeout=10,
+            )
+            if resp.status_code == 204:
+                return {
+                    "status": "ok",
+                    "mode": "github_actions",
+                    "detail": "Workflow запущен в GitHub Actions",
+                    "repo": GITHUB_REPO,
+                }
+            raise HTTPException(resp.status_code, resp.text)
+
+        # --- Локальный fallback (нет токена) ---
         repo_root = Path(__file__).resolve().parents[2]
         target_path = repo_root / req.target if not Path(req.target).is_absolute() else Path(req.target)
 
@@ -131,18 +159,16 @@ if app:
             from src.gates.data_gate.data_gate import build_report, gate_check
             results = gate_check(str(target_path))
             report = build_report(req.target, results)
-
         elif req.check_type == "code_gate":
             from src.gates.code_gate.code_gate import build_report, gate_check
             results = gate_check(str(repo_root), stage="ci")
             report = build_report(req.target, results)
-
         elif req.check_type == "dependency_gate":
             from src.gates.dependency_gate.dependency_gate import build_report, gate_check
             results = gate_check(str(repo_root))
             report = build_report(req.target, results)
 
-        return {"status": "ok", "report": report}
+        return {"status": "ok", "mode": "local", "report": report}
 
     @app.post("/api/v1/upload")
     def upload_file(file: UploadFile):
