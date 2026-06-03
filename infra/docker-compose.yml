@@ -74,15 +74,16 @@ services:
     ports: ["8080:8080"]
     depends_on: [redis]
 
-  # CI: self-hosted GitHub Actions runner (джобы исполняются локально). TODO: образ/токен.
+  # CI: self-hosted runner (label в workflow: self-hosted). Нужны GITHUB_REPO + GITHUB_TOKEN в .env
   ci-runner:
     image: myoung34/github-runner:latest
+    env_file: [../.env]
     environment:
-      - REPO_URL=https://github.com/${GITHUB_REPO:-org/mlsecopus}
-      - RUNNER_NAME=mlsec-local
-      - ACCESS_TOKEN=${GITHUB_TOKEN:-change_me}
+      REPO_URL: https://github.com/${GITHUB_REPO:-org/mlsecopus}
+      RUNNER_NAME: ${RUNNER_NAME:-mlsec-local}
+      ACCESS_TOKEN: ${GITHUB_TOKEN:-change_me}
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock   # для запуска гейт-образов
+      - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   pgdata:

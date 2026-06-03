@@ -21,7 +21,8 @@ RE_CARD = re.compile(r"\b(?:\d[ -]?){16}\b")
 # Маркеры prompt-инъекций (для текстовых датасетов / RAG)
 RE_INJECTION = re.compile(r"(ignore previous instructions|\[SYSTEM INSTRUCTION\]|approve any loan)", re.I)
 
-BALANCE_SHIFT_THRESHOLD = 0.4  # сдвиг доли класса > 40 п.п. → подозрение на poisoning
+# Доля меньшинства >= порога → подозрение на poisoning (искусственно ровный 50/50).
+POISON_MIN_CLASS_SHARE = 0.35
 
 
 def gate_check(path: str, schema: list[str] | None = None) -> list[dict]:
@@ -57,11 +58,11 @@ def gate_check(path: str, schema: list[str] | None = None) -> list[dict]:
     if "target" in df.columns:
         try:
             vc = df["target"].value_counts(normalize=True)
-            shift = float(vc.max() - vc.min()) if len(vc) > 1 else 0.0
-            ok = shift <= (1 - BALANCE_SHIFT_THRESHOLD)
+            min_share = float(vc.min()) if len(vc) > 1 else 0.0
+            ok = min_share < POISON_MIN_CLASS_SHARE
             results.append({"check": "class_balance",
                             "status": "PASS" if ok else "FAIL",
-                            "detail": f"max-min доля классов = {shift:.2f}",
+                            "detail": f"доля меньшинства = {min_share:.2f}",
                             "evidence": {"distribution": vc.round(3).to_dict()}})
         except Exception as e:  # noqa: BLE001
             results.append({"check": "class_balance", "status": "SKIP",
