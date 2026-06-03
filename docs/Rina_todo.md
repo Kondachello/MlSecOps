@@ -32,7 +32,7 @@ cp .env.example .env   # заполнить позже с командой
 > **Бэкенд:** мне нужен контракт JSON гейта (ниже §Контракт) и позже `POST repository_dispatch` + polling run.  
 > **Фронт:** кнопки Verify/RUN/DEPLOY должны бить в бэк, не напрямую в GitHub.  
 > **ML/DS:** для `train.py` нужен минимальный выход — файл `.safetensors` в `artifacts/`.  
-> **Инфра:** PAT для self-hosted runner и список secrets в GitHub — согласуем на этапе 0.
+> **Инфра:** CI на GitHub-hosted `ubuntu-22.04`; secrets — на этапе 1+.
 
 ---
 
@@ -67,19 +67,19 @@ cp .env.example .env   # заполнить позже с командой
 
 # ЭТАП 0 — Подготовка среды (1–2 дня)
 
-**Цель:** локально гонять гейты и понимать, куда встанет runner.  
-**Проверки пока:** только вручную на ноуте, CI ещё не обязателен.
+**Цель:** локально гонять гейты; CI на **GitHub-hosted `ubuntu-22.04`**, ветка **`Rina`**.  
+**Статус:** этап 0 закрыт после `check_local` + push → автозапуск `ci.yml`.
 
 ---
 
 ## 0.1 — Локальные демо-данные
 
-- [ ] **Ты:** выполнить:
+- [x] **Ты:** выполнить:
   ```bash
   pip install pandas pyarrow
   python data/make_datasets.py
   ```
-- [ ] Убедиться, что есть файлы:
+- [x] Убедиться, что есть файлы:
   - `data/train_m1_clean.csv`
   - `data/train_m1_poisoned.csv`
 
@@ -99,16 +99,16 @@ python src/gates/data_gate/data_gate.py --path data/train_m1_poisoned.csv --json
 
 ## 0.2 — Прогон остальных гейтов вручную (базовая линия)
 
-- [ ] G3 clean:
+- [x] G3 clean:
   ```bash
   python src/gates/dependency_gate/dependency_gate.py --path demo/requirements_clean.txt --json
   ```
-- [ ] G3 bad:
+- [x] G3 bad:
   ```bash
   python src/gates/dependency_gate/dependency_gate.py --path demo/insecure/requirements_vuln.txt --json
   # exit 1
   ```
-- [ ] G2 (пока может быть SKIP без gitleaks):
+- [x] G2 (пока может быть SKIP без gitleaks):
   ```bash
   pip install bandit pip-audit
   python src/gates/code_gate/code_gate.py --path src --stage ci --json
@@ -130,7 +130,7 @@ python src/gates/data_gate/data_gate.py --path data/train_m1_poisoned.csv --json
 | `scripts/ci/README.md` | шпаргалка |
 
 - [x] Файлы в репозитории
-- [ ] **Ты:** прогнать `bash scripts/ci/check_local.sh` (Git Bash / WSL)
+- [x] **Ты:** `scripts/ci/check_local.ps1` (Windows) или `bash scripts/ci/check_local.sh`
 
 ---
 
@@ -138,7 +138,7 @@ python src/gates/data_gate/data_gate.py --path data/train_m1_poisoned.csv --json
 
 - [x] Файл-напоминание + сборка через `build_all_gates.sh`
 
-- [ ] **Ты (если есть Docker):**
+- [x] **Ты (если есть Docker):** образы `mlsec-gate-*` — опционально; локально достаточно python
 
 ```bash
 bash scripts/ci/build_all_gates.sh
@@ -156,8 +156,8 @@ docker images
 - [x] `.env` (локально, не в git): `GITHUB_REPO`, `GITHUB_TOKEN`, `GITHUB_REF=Rina`
 - [x] Workflow: `runs-on: ubuntu-22.04` в `ci.yml`, `train.yml`, `deploy.yml` (ветка [Rina](https://github.com/Kondachello/MlSecOps/tree/Rina))
 - [x] **Не нужны:** `docker compose … ci-runner`, Admin, Self-hosted **Idle**, `REPO_URL` / `ACCESS_TOKEN` / `RUNNER_NAME` в `.env`
-- [ ] **Ты:** первый зелёный или осмысленный прогон — **Actions → ci → Run workflow** → ветка **Rina**
-- [ ] **Ты:** G1 локально — `bash scripts/ci/check_local.sh` (или `run_gate_docker.ps1` на Windows)
+- [x] **Ты:** CI на push в **Rina** (`on.push.branches`) + вручную **Actions → ci → Run workflow**
+- [x] **Ты:** G1 локально — `check_local.ps1` / `check_local.sh`
 
 **Коллегам:** «CI на GitHub-hosted `ubuntu-22.04`, ветка `Rina`. Облачный runner из коробки; self-hosted в compose — только если инфра позже попросит».
 
@@ -183,10 +183,12 @@ docker images
 
 ### ✅ Критерий готовности этапа 0
 
-- [ ] **Ты:** G1 clean/bad локально (`check_local.sh` или вручную)
+- [x] **Ты:** G1 clean/bad локально (`check_local.ps1` / `check_local.sh`)
 - [x] `scripts/ci/` в репозитории
 - [x] **Runner:** GitHub-hosted `ubuntu-22.04` в workflow (не self-hosted **Idle**)
-- [ ] **Ты:** хотя бы один прогон **ci** на ветке **Rina** (Actions → Run workflow); падение только `db-smoke` — ок для этапа 0, зафиксировать в issue
+- [x] **Ты:** прогон **ci** на **Rina** (push или Run workflow); `db-smoke` — скелет, без Postgres
+
+**Этап 0 — DONE** (локально `check_local.ps1`; CI: push в `Rina` → workflow `ci`).
 
 ---
 

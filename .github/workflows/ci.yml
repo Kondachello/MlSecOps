@@ -3,8 +3,10 @@
 name: ci
 
 on:
+  push:
+    branches: [Rina]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
   workflow_dispatch:
   repository_dispatch:
     types: [verify, scan]
@@ -73,8 +75,10 @@ jobs:
 
   db-smoke:
     runs-on: ubuntu-22.04
+    # Скелет tests/smoke_db.py — без Postgres на GitHub-hosted (этап 0)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
-      - run: python tests/smoke_db.py
+      - name: smoke_db skeleton
+        run: python tests/smoke_db.py

@@ -7,7 +7,8 @@
 | `build_all_gates.ps1` | **Сборка образов (PowerShell)** |
 | `run_gate_docker.ps1` | Запуск гейта в контейнере после build |
 | `parse_report.py` | Краткий вывод JSON-отчёта |
-| `check_local.sh` | Проверка этапа 0 без Docker |
+| `check_local.sh` | Проверка этапа 0 без Docker (Git Bash) |
+| `check_local.ps1` | То же для **PowerShell** (Windows) |
 
 ## Docker: сборка всех гейтов (Windows)
 
