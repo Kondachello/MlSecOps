@@ -48,7 +48,7 @@ flowchart TB
 
 ## Твоя зона ответственности (одна фраза)
 
-**Ты — CI/CD:** гейты + workflows + скрипты `scripts/ci/` + артефакты отчётов для бэка.  
+**Ты — CI/CD:** гейты + `.github/workflows/` + минимум `scripts/ci/` (только GHA) + артефакты для бэка.  
 **Не ты:** полный `src/api/main.py`, UI, MinIO, MLflow, RBAC в проде.
 
 ---
@@ -57,9 +57,9 @@ flowchart TB
 
 | Этап | Статус | Что это значит |
 |------|--------|----------------|
-| **0** | ✅ DONE | Локально `check_local.ps1`, GitHub-hosted, push → `ci` |
+| **0** | ✅ DONE | GitHub-hosted `ubuntu-22.04`, push → `ci` |
 | **1** | 🟡 **~90%** — **закрыть сейчас** | G1–G5 в CI есть; осталось: артефакты JSON, `build-gates`, красный тест, PR checks |
-| **2** | ⏳ после 1 | Укрепить G5 lineage, `parse_report`, `artifacts/` |
+| **2** | ⏳ после 1 | Укрепить G5 lineage, `artifacts/` |
 | **3** | ⏳ после 2 | `train.yml` end-to-end + preflight mock |
 | **4** | ⏳ после 3 | `deploy.yml` |
 | **5** | параллельно с 3–4 | Стыковка с Колей/бэком (dispatch, не дублировать БД из job) |
@@ -75,19 +75,9 @@ flowchart TB
 
 ### День A — проверка «всё ещё зелёное»
 
-- [ ] **A1.** Убедиться, что ты на ветке `Rina`:
-  ```powershell
-  cd alfa_case_2
-  git checkout Rina
-  git pull origin Rina
-  ```
-- [ ] **A2.** Локально (5–10 мин):
-  ```powershell
-  .\scripts\ci\check_local.ps1
-  python -m py_compile src/gates/*/*.py
-  ```
-- [ ] **A3.** Открыть последний run **ci** на GitHub → все jobs **G1–G5 + syntax** зелёные (кроме `build-gates`, если он жёлтый из‑за `continue-on-error`).
-- [ ] **A4.** Отметить в этом файле: [ ] 1.2 «перепроверить в Actions», [ ] 1.3, [ ] 1.1 `py_compile`.
+- [ ] **A1.** `git checkout Rina` → `git pull origin Rina` → коммит → `git push origin Rina`
+- [ ] **A2.** [Actions → workflow **ci**](https://github.com/Kondachello/MlSecOps/actions) → последний run: **syntax**, G1–G5, **build-gates** зелёные
+- [ ] **A3.** Отметить в файле: [ ] 1.2, [ ] 1.3 (перепроверено в Actions)
 
 ### День B — артефакты для бэка (§1.8)
 
@@ -119,20 +109,6 @@ flowchart TB
   - Убедиться, что workflow **failed**. Ветку **не мержить** — только скрин для демо.
 - [ ] **C4.** `workflow_dispatch`: Actions → **ci** → Run workflow → все обязательные jobs green.
 
-### День D — база локально (опционально, не блокер CI)
-
-`core/db.py` на `Rina` уже с `log_event`, `ingest_gate_report`. В GHA Postgres нет → `CI_SKIP_DB_SMOKE=true` — **нормально**.
-
-- [ ] **D1.** Если Docker доступен:
-  ```powershell
-  docker compose -f infra/docker-compose.yml up -d postgres
-  pip install "psycopg[binary]"
-  $env:CI_SKIP_DB_SMOKE="false"
-  python tests/smoke_db.py
-  python infra/seed_admin.py
-  ```
-- [ ] **D2.** Если Docker нет — пропустить; в §1.7 оставить SKIP в GHA до появления `services: postgres` или compose-runner.
-
 ### ✅ Этап 1 считается закрытым, когда
 
 - [x] push `Rina` → **ci**: G1–G5 + syntax green  
@@ -145,17 +121,15 @@ flowchart TB
 
 ---
 
-## Ежедневный ритуал (каждый рабочий день, 15–30 мин)
+## Ежедневный ритуал (только GitHub-hosted)
 
 | # | Действие |
 |---|----------|
-| 1 | `git pull origin Rina` |
-| 2 | `.\scripts\ci\check_local.ps1` перед коммитом |
-| 3 | Коммит → `git push origin Rina` |
-| 4 | [GitHub Actions](https://github.com/Kondachello/MlSecOps/actions) → workflow **ci** → зелёный? |
-| 5 | Если правила гейта — сообщить в чат; если ломается CI — чинить **только** `Rina`, не чужие ветки |
+| 1 | `git pull` → правки → `git push origin Rina` |
+| 2 | [GitHub Actions](https://github.com/Kondachello/MlSecOps/actions) → **ci** (и при необходимости **train** / **deploy**) |
+| 3 | Красный job → лог шага на GHA → фикс в `Rina` → снова push |
 
-**Не делать каждый день:** merge `kolya_gh_api_test`, переписывать `src/api/main.py`, поднимать весь compose без задачи.
+**Не делать:** локальные прогоны гейтов на Windows; merge `kolya_gh_api_test` целиком.
 
 ---
 
@@ -165,7 +139,7 @@ flowchart TB
 |----------|--------|
 | Мержить ветку Коли целиком в `Rina` | Сотрёт/сломает твой `ci.yml` и фикстуры; у него другой `event_type` (`run-security-scan`) |
 | Дописывать весь Gatekeeper API | Зона Коли/бэка; ты только контракт + артефакты |
-| Писать в Postgres из каждого CI job | Один источник правды — бэкенд; у тебя есть `scripts/ci/ingest_gate_to_db.sh` только для **локальной** отладки |
+| Писать в Postgres из каждого CI job | Один источник правды — бэкенд (`ingest_gate_report` в API) |
 | Стартовать **deploy** / cosign | Этап 4, после train |
 | Self-hosted runner | Решение команды: сейчас **ubuntu-22.04** GitHub-hosted |
 
@@ -175,7 +149,7 @@ flowchart TB
 
 | Неделя | Этап | Твои задачи (кратко) |
 |--------|------|----------------------|
-| 1 | **2** | `artifacts/.gitkeep`; G5 lineage + `test_registry_gate.sh`; `parse_report.py` exit 1 |
+| 1 | **2** | `artifacts/.gitkeep`; G5 lineage + `test_registry_gate.sh` |
 | 2 | **3** | `preflight_train.sh` + mock; заглушка `train.py` → `.safetensors`; допилить `train.yml` (уже `ubuntu-22.04`); `post_register.sh` stub |
 | 3 | **4** | `preflight_deploy.sh`; deploy steps (trivy позже) |
 | параллельно | **5** | §5.4 — согласование с Колей; не трогать JSON гейта |
@@ -221,8 +195,8 @@ flowchart TB
 | Инструмент | Зачем |
 |------------|--------|
 | **Git** | ветка `Rina`, push |
-| **Python 3.11** | локальный прогон гейтов |
-| **Docker Desktop** | compose, образы гейтов, runner |
+| **Python 3.11** | опционально, правки гейтов; проверка — только Actions |
+| **Git** | push в `Rina` |
 | **GitHub аккаунт** + доступ к репо команды | Actions, secrets |
 
 Опционально позже: **cosign**, **trivy**, **gitleaks** (можно ставить только в CI/runner).
@@ -288,8 +262,8 @@ cp .env.example .env   # заполнить позже с командой
 
 # ЭТАП 0 — Подготовка среды (1–2 дня)
 
-**Цель:** локально гонять гейты; CI на **GitHub-hosted `ubuntu-22.04`**, ветка **`Rina`**.  
-**Статус:** этап 0 закрыт после `check_local` + push → автозапуск `ci.yml`.
+**Цель:** CI на **GitHub-hosted `ubuntu-22.04`**, ветка **`Rina`**.  
+**Статус:** этап 0 закрыт — push → автозапуск `ci.yml`.
 
 ---
 
@@ -340,31 +314,21 @@ python src/gates/data_gate/data_gate.py --path data/train_m1_poisoned.csv --json
 
 ---
 
-## 0.3 — Папка `scripts/ci/` (в репо уже есть)
+## 0.3 — `scripts/ci/` (только GitHub Actions)
 
 | Файл | Назначение |
 |------|------------|
-| `scripts/ci/run_gate.sh` | `bash scripts/ci/run_gate.sh data data/train_m1_clean.csv` |
-| `scripts/ci/build_all_gates.sh` | сборка образов `mlsec-gate-*` |
-| `scripts/ci/parse_report.py` | краткий вывод JSON-отчёта |
-| `scripts/ci/check_local.sh` | всё из 0.1–0.3 одной командой |
+| `assert_gate_checks.py` | `ci.yml` / `deploy.yml` — checks не SKIP |
+| `install_trivy.sh` | `deploy.yml` — Trivy на runner |
 | `scripts/ci/README.md` | шпаргалка |
 
-- [x] Файлы в репозитории
-- [x] **Ты:** `scripts/ci/check_local.ps1` (Windows) или `bash scripts/ci/check_local.sh`
+- [x] Локальные `check_local.*`, `run_gate.*`, `build_all_gates.*` удалены
 
 ---
 
 ## 0.4 — `infra/docker-compose.gates.yml`
 
-- [x] Файл-напоминание + сборка через `build_all_gates.sh`
-
-- [x] **Ты (если есть Docker):** образы `mlsec-gate-*` — опционально; локально достаточно python
-
-```bash
-bash scripts/ci/build_all_gates.sh
-docker images
-```
+- [x] Образы `mlsec-gate-*` собираются в job **build-gates** (`ci.yml`)
 
 ---
 
@@ -378,7 +342,7 @@ docker images
 - [x] Workflow: `runs-on: ubuntu-22.04` в `ci.yml`, `train.yml`, `deploy.yml` (ветка [Rina](https://github.com/Kondachello/MlSecOps/tree/Rina))
 - [x] **Не нужны:** `docker compose … ci-runner`, Admin, Self-hosted **Idle**, `REPO_URL` / `ACCESS_TOKEN` / `RUNNER_NAME` в `.env`
 - [x] **Ты:** CI на push в **Rina** (`on.push.branches`) + вручную **Actions → ci → Run workflow**
-- [x] **Ты:** G1 локально — `check_local.ps1` / `check_local.sh`
+- [x] **Ты:** G1 в Actions (job `data-gate`)
 
 **Коллегам:** «CI на GitHub-hosted `ubuntu-22.04`, ветка `Rina`. Облачный runner из коробки; self-hosted в compose — только если инфра позже попросит».
 
@@ -404,12 +368,12 @@ docker images
 
 ### ✅ Критерий готовности этапа 0
 
-- [x] **Ты:** G1 clean/bad локально (`check_local.ps1` / `check_local.sh`)
+- [x] **Ты:** G1 clean/bad в Actions (`data-gate`)
 - [x] `scripts/ci/` в репозитории
 - [x] **Runner:** GitHub-hosted `ubuntu-22.04` в workflow (не self-hosted **Idle**)
 - [x] **Ты:** прогон **ci** на **Rina** (push или Run workflow); `db-smoke` — скелет, без Postgres
 
-**Этап 0 — DONE** (локально `check_local.ps1`; CI: push в `Rina` → workflow `ci`).
+**Этап 0 — DONE** (push в `Rina` → workflow `ci` на GitHub-hosted).
 
 ---
 
@@ -425,10 +389,7 @@ docker images
 ## 1.1 — Job `syntax` (уже есть)
 
 - [x] Пути гейтов G1–G5 в `py_compile` (из sasha1)
-- [ ] Локально перед push:
-  ```bash
-  python -m py_compile src/gates/*/*.py
-  ```
+- [x] Проверка в job **syntax** в `ci.yml` (не локально)
 
 **Коллегам:** «Не ломайте синтаксис — job `syntax` первый».
 
@@ -456,7 +417,7 @@ docker images
 - [x] `code_gate.py` из sasha1 — парсинг bandit/pip-audit/gitleaks JSON
 - [x] `ci.yml`: gitleaks v8.18.4, без `|| true`, clean/bad как в sasha1
 
-**Проверка локально** — повторить 0.2 после правок.
+**Проверка** — push → Actions, job `code-gate`.
 
 **Коллегам:**  
 «Секреты и демо-код только в `demo/insecure/` — CI специально ломает PR, если туда что-то попадёт в скан `src/`».
@@ -494,7 +455,7 @@ docker images
 
 - [x] `core/db.py` на `Rina`: `log_event`, `verify_chain`, `ingest_gate_report` (для бэка, не из CI job).
 - [x] `tests/smoke_db.py` — реальный тест; в GHA: `CI_SKIP_DB_SMOKE=true` (нет Postgres в job).
-- [ ] **Ты (локально, опционально):** Docker postgres → `python tests/smoke_db.py` (см. §«День D» в начале файла).
+- [ ] **Позже:** `services: postgres` в job `db-smoke` на GHA (опционально).
 - [ ] **Позже (не блокер этапа 1):** в `ci.yml` добавить `services: postgres` + `CI_SKIP_DB_SMOKE=false`, либо оставить SKIP до compose-runner.
 
 **Коллегам (бэк):** «БД для ingest готова в `core/db`; в CI smoke пропущен без Postgres. Подключайте ingest из API».
@@ -506,8 +467,6 @@ docker images
 > Пошагово: §«День B» в начале файла.
 
 - [ ] В каждый gate-job: сохранить stdout `--json` в `gate-*.json` + `upload-artifact@v4`.
-- [ ] (Опц.) `parse_report.py` — краткий human-readable лог в step summary, не вместо JSON.
-
 **Коллегам (бэк):** «Артефакты workflow `gate-reports-*` — тот же JSON, что контракт §выше, до интеграции API».
 
 ---
@@ -527,7 +486,7 @@ docker images
 # ЭТАП 2 — Довести скрипты гейтов G2/G4/G5 (3–5 дней)
 
 **Цель:** стабильные PASS/FAIL, готовность к `train.yml`.  
-**Проверки:** локально + отдельный workflow или job в `ci.yml`.
+**Проверки:** только в `ci.yml` на GitHub-hosted.
 
 ---
 
@@ -564,15 +523,9 @@ python src/gates/model_gate/model_gate.py --path demo/models/bad.pkl --json
 
 ---
 
-## 2.3 — `parse_report.py` финальная версия
-
-- [ ] Exit 1, если `passed: false` (для использования в shell).
-
----
-
 ### ✅ Критерий этапа 2
 
-- [ ] Все 5 гейтов (G1–G5) локально: clean PASS, demo bad FAIL
+- [ ] Все 5 гейтов (G1–G5) в Actions: clean PASS, demo bad FAIL
 - [ ] Образы `mlsec-gate-*` собираются
 
 ---
@@ -773,10 +726,9 @@ echo '{"status":"registered_stub"}' > ci-register.json
 
 | # | Путь | Этап |
 |---|------|------|
-| 1 | `scripts/ci/run_gate.sh` | 0 |
-| 2 | `scripts/ci/build_all_gates.sh` | 0 |
-| 3 | `scripts/ci/parse_report.py` | 0 → 2 |
-| 4 | `infra/docker-compose.gates.yml` | 0 |
+| 1 | `scripts/ci/assert_gate_checks.py` | 1 |
+| 2 | `scripts/ci/install_trivy.sh` | 4 |
+| 3 | `infra/docker-compose.gates.yml` | 0 |
 | 5 | `demo/model_cards/valid_card.json` | 1 |
 | 6 | `demo/model_cards/invalid_card.json` | 1 |
 | 7 | `.github/workflows/ci.yml` (правки) | 1 |
@@ -799,10 +751,8 @@ echo '{"status":"registered_stub"}' > ci-register.json
 
 | Действие | Команда / где | Как часто |
 |----------|---------------|-----------|
-| Быстрая проверка гейта | `python src/gates/.../..._gate.py --path ... --json` | перед каждым коммитом |
-| Все демо-данные | `python data/make_datasets.py` | после pull |
-| Сборка образов | `bash scripts/ci/build_all_gates.sh` | перед deploy docker-gates |
-| CI полный | Push / PR → GitHub **ci** | каждый push в `Rina` |
+| CI полный | Push → GitHub **ci** | каждый push в `Rina` |
+| Ручной прогон | Actions → **ci** → Run workflow | при сомнениях |
 | Train | Actions → **train** → Run workflow | по готовности этапа 3 |
 | Deploy | Actions → **deploy** | только с approved моделью |
 | Compose стенд | `docker compose -f infra/docker-compose.yml up` | интеграция с бэком |

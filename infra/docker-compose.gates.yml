@@ -1,9 +1,6 @@
-# Сборка образов гейтов (команда из корня alfa_case_2):
-#
+# Сборка образов гейтов (из корня alfa_case_2):
 #   docker compose -f infra/docker-compose.gates.yml build
-#
-# Тест G1 после сборки (PowerShell):
-#   .\scripts\ci\run_gate_docker.ps1 -Gate data -HostPath data\train_m1_clean.csv
+# Прогон гейтов — job build-gates в .github/workflows/ci.yml (GitHub-hosted).
 
 services:
   gate-data:

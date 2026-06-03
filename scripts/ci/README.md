@@ -1,40 +1,12 @@
-# scripts/ci — обёртки для CI/CD
+# scripts/ci — только для GitHub Actions
 
-| Скрипт | Назначение |
-|--------|------------|
-| `run_gate.sh` | Гейт через Python (Git Bash) |
-| `build_all_gates.sh` | Сборка образов (Git Bash) |
-| `build_all_gates.ps1` | **Сборка образов (PowerShell)** |
-| `run_gate_docker.ps1` | Запуск гейта в контейнере после build |
-| `parse_report.py` | Краткий вывод JSON-отчёта |
-| `install_trivy.sh` | Установка Trivy (deploy / локально) |
-| `assert_gate_checks.py` | CI: checks не SKIP (secrets, sast, cve_deps, trivy_image) |
-| `check_local.sh` | Проверка этапа 0 без Docker (Git Bash) |
-| `check_local.ps1` | То же для **PowerShell** (Windows) |
+Локальные обёртки (Windows / bash) удалены: проверки только через push → [Actions](https://github.com/Kondachello/MlSecOps/actions) на **ubuntu-22.04**.
 
-## Docker: сборка всех гейтов (Windows)
+| Файл | Где используется |
+|------|------------------|
+| `assert_gate_checks.py` | `ci.yml`, `deploy.yml` — SAST/SCA/secrets/trivy не SKIP |
+| `install_trivy.sh` | `deploy.yml` — установка Trivy на runner |
 
-**Сначала:** `docker version` — должен быть блок **Server**. Если 500 — перезапусти Docker Desktop.
+Сборка образов гейтов в CI: job **build-gates** → `docker compose -f infra/docker-compose.gates.yml build`.
 
-Одна команда на образ (не две в одной строке):
-
-```powershell
-cd alfa_case_2
-docker compose -f infra/docker-compose.gates.yml build
-```
-
-Или:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/ci/build_all_gates.ps1
-```
-
-Проверка G1 в контейнере:
-
-```powershell
-.\scripts\ci\run_gate_docker.ps1 -Gate data -HostPath data\train_m1_clean.csv
-```
-
-Без Docker — только Python: `python src/gates/data_gate/data_gate.py --path data/train_m1_clean.csv --json`
-
-План: `docs/Rina_todo.md`.
+План работ: `docs/Rina_todo.md`.
