@@ -152,7 +152,7 @@ docker images
 ### A) GitHub-hosted runner (ваш режим) — без своего Docker ci-runner
 
 - [x] `.env`: `GITHUB_REPO`, `GITHUB_TOKEN`, `GITHUB_REF=Rina`
-- [x] В workflow: `runs-on: ubuntu-latest` (облачный runner GitHub, не `self-hosted`)
+- [x] В workflow: `runs-on: ubuntu-22.04` (фикс. GitHub-hosted, не `ubuntu-latest` / не `self-hosted`)
 - [x] **Не нужен** `docker compose … ci-runner` и Admin на Settings → Runners
 - [ ] Запуск: **Actions → ci → Run workflow** → ветка **Rina**
 - [ ] Локально гейты: `bash scripts/ci/check_local.sh`

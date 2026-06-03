@@ -1,4 +1,4 @@
-# CI — проверки на PR/верификации. GitHub-hosted runner (ubuntu-latest).
+# CI — проверки на PR/верификации. GitHub-hosted runner (фикс. образ ubuntu-22.04).
 # Принцип каждой гейт-джобы: «чистое проходит / плохое блокируется» (две проверки).
 name: ci
 
@@ -11,7 +11,7 @@ on:
 
 jobs:
   syntax:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,7 +29,7 @@ jobs:
             ui/app.py infra/seed_admin.py data/make_datasets.py
 
   data-gate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,7 +45,7 @@ jobs:
           else echo "ok, заблокировано"; fi
 
   code-gate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -58,7 +58,7 @@ jobs:
         run: python src/gates/code_gate/code_gate.py --path demo/insecure --stage ci --json || true
 
   dependency-gate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -72,7 +72,7 @@ jobs:
           else echo "ok, заблокировано"; fi
 
   db-smoke:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
