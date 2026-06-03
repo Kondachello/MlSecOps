@@ -110,37 +110,39 @@ if app:
         """Кнопка 'просканировать ресурс всеми применимыми образами' → запуск гейтов/workflow. TODO."""
         return {"status": "TODO"}
 
-    # ---- CI/CD интеграция (GitHub Actions) ----
+    # ---- CI/CD интеграция (запуск гейтов в процессе) ----
     @app.post("/api/v1/ci/trigger")
     def trigger_workflow(req: TriggerWorkflowRequest):
-        """Запустить GitHub Actions workflow для проверки безопасности."""
-        if not _http:
-            raise HTTPException(500, "requests library not installed")
-        if not GITHUB_TOKEN or not GITHUB_REPO:
-            raise HTTPException(
-                500, "Set GITHUB_TOKEN and GITHUB_REPO environment variables")
+        """Запустить гейт безопасности напрямую."""
         allowed = {"data_gate", "code_gate", "dependency_gate"}
         if req.check_type not in allowed:
             raise HTTPException(400, f"check_type must be one of {allowed}")
-        resp = _http.post(
-            f"https://api.github.com/repos/{GITHUB_REPO}/dispatches",
-            headers={
-                "Authorization": f"Bearer {GITHUB_TOKEN}",
-                "Accept": "application/vnd.github.v3+json",
-            },
-            json={
-                "event_type": "run-security-scan",
-                "client_payload": {
-                    "check_type": req.check_type,
-                    "target": req.target,
-                    "ref": GITHUB_REF,
-                },
-            },
-            timeout=10,
-        )
-        if resp.status_code == 204:
-            return {"status": "ok", "detail": "Workflow triggered", "repo": GITHUB_REPO}
-        raise HTTPException(resp.status_code, resp.text)
+
+        repo_root = Path(__file__).resolve().parents[2]
+        target_path = repo_root / req.target if not Path(req.target).is_absolute() else Path(req.target)
+
+        if req.check_type == "data_gate":
+            if not target_path.exists():
+                import subprocess
+                subprocess.run(
+                    ["python", str(repo_root / "data" / "make_datasets.py")],
+                    cwd=str(repo_root), check=True,
+                )
+            from src.gates.data_gate.data_gate import build_report, gate_check
+            results = gate_check(str(target_path))
+            report = build_report(req.target, results)
+
+        elif req.check_type == "code_gate":
+            from src.gates.code_gate.code_gate import build_report, gate_check
+            results = gate_check(str(repo_root), stage="ci")
+            report = build_report(req.target, results)
+
+        elif req.check_type == "dependency_gate":
+            from src.gates.dependency_gate.dependency_gate import build_report, gate_check
+            results = gate_check(str(repo_root))
+            report = build_report(req.target, results)
+
+        return {"status": "ok", "report": report}
 
     @app.post("/api/v1/upload")
     def upload_file(file: UploadFile):
@@ -153,6 +155,13 @@ if app:
         content = file.file.read()
         dest.write_bytes(content)
         return {"status": "ok", "filename": safe_name, "size": len(content)}
+
+    @app.get("/api/v1/files")
+    def list_files():
+        """Список CSV-файлов доступных для проверки."""
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        files = sorted(UPLOAD_DIR.glob("*.csv"))
+        return {"files": [f"data/{f.name}" for f in files]}
 
     # ---- False Positives ----
     @app.post("/api/v1/findings/{finding_id}/false_positive")

@@ -46,64 +46,115 @@ def render():
     with tabs[0]:
         st.subheader("Запустить проверку безопасности")
 
-        check_type = st.selectbox(
-            "Тип проверки (Gate)",
-            ["data_gate", "code_gate", "dependency_gate"],
-        )
-
-        if check_type == "data_gate":
-            target = st.selectbox("Датасет", [
-                "data/train_m1_clean.csv",
-                "data/train_m1_poisoned.csv",
-                "data/prod_traffic_drifted.csv",
-            ])
-        else:
-            target = "."
-            st.info("Проверка будет запущена на всём репозитории")
-
-        if st.button("Запустить проверку в CI"):
+        def _run_gate(check_type: str, target: str):
             if _http is None:
                 st.error("Библиотека requests не установлена")
-            else:
+                return
+            with st.spinner(f"Запускаю {check_type}..."):
                 try:
                     resp = _http.post(
                         f"{API}/api/v1/ci/trigger",
                         json={"check_type": check_type, "target": target},
-                        timeout=10,
+                        timeout=60,
                     )
                     data = resp.json()
-                    if data.get("status") == "ok":
-                        st.success("Workflow запущен!")
-                        repo = data.get("repo", "")
-                        if repo:
-                            st.markdown(
-                                f"[Открыть GitHub Actions](https://github.com/{repo}/actions)")
-                    else:
-                        st.error(f"Ошибка: {data.get('detail', resp.text)}")
                 except Exception as e:
                     st.error(f"Не удалось подключиться к бэкенду: {e}")
+                    return
+
+            if data.get("status") != "ok":
+                st.error(f"Ошибка: {data.get('detail', resp.text)}")
+                return
+
+            report = data["report"]
+            passed = report.get("passed", False)
+            if passed:
+                st.success(f"✅ {check_type.upper()} — PASS")
+            else:
+                st.error(f"❌ {check_type.upper()} — FAIL: {report.get('failed_checks', [])}")
+
+            for check in report.get("checks", []):
+                status = check["status"]
+                label = f"**{check['check']}** — {check['detail']}"
+                if status == "PASS":
+                    st.success(label)
+                elif status == "FAIL":
+                    st.error(label)
+                else:
+                    st.warning(f"⚠️ {label} (SKIP)")
+
+        # --- G1: Data Gate ---
+        with st.expander("🗂 G1 — Data Gate (датасет: схема, PII, баланс классов)", expanded=True):
+            # Загрузить список файлов с бэкенда
+            csv_files = []
+            if _http:
+                try:
+                    r = _http.get(f"{API}/api/v1/files", timeout=5)
+                    csv_files = r.json().get("files", [])
+                except Exception:
+                    pass
+            if not csv_files:
+                csv_files = ["data/train_m1_clean.csv"]
+
+            target_ds = st.selectbox("Выбери файл для проверки", csv_files, key="ds_select")
+            if st.button("Запустить Data Gate", key="btn_data"):
+                _run_gate("data_gate", target_ds)
+
+        # --- G2: Code Gate ---
+        with st.expander("🔍 G2 — Code Gate (секреты, SAST, CVE зависимостей)"):
+            st.caption("Проверяет весь репозиторий: gitleaks + bandit + pip-audit")
+            if st.button("Запустить Code Gate", key="btn_code"):
+                _run_gate("code_gate", ".")
+
+        # --- G3: Dependency Gate ---
+        with st.expander("📦 G3 — Dependency Gate (allow-list, пиннинг, typosquatting)"):
+            st.caption("Проверяет requirements.txt на безопасность зависимостей")
+            if st.button("Запустить Dependency Gate", key="btn_dep"):
+                _run_gate("dependency_gate", ".")
 
         st.divider()
-        st.subheader("Загрузить CSV для проверки")
+        st.subheader("Загрузить свой CSV")
         uploaded = st.file_uploader("Выберите CSV-файл", type=["csv"])
-        if uploaded is not None and st.button("Загрузить на сервер"):
-            if _http is None:
-                st.error("Библиотека requests не установлена")
-            else:
-                try:
-                    resp = _http.post(
-                        f"{API}/api/v1/upload",
-                        files={"file": (uploaded.name, uploaded.getvalue(), "text/csv")},
-                        timeout=30,
-                    )
-                    data = resp.json()
-                    if data.get("status") == "ok":
-                        st.success(
-                            f"Файл загружен: {data['filename']} ({data['size']} байт)")
+        if uploaded is not None:
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Загрузить на сервер", key="btn_upload"):
+                    if _http is None:
+                        st.error("Библиотека requests не установлена")
                     else:
-                        st.error(f"Ошибка: {data.get('detail', '')}")
-                except Exception as e:
-                    st.error(f"Ошибка загрузки: {e}")
+                        try:
+                            resp = _http.post(
+                                f"{API}/api/v1/upload",
+                                files={"file": (uploaded.name, uploaded.getvalue(), "text/csv")},
+                                timeout=30,
+                            )
+                            data = resp.json()
+                            if data.get("status") == "ok":
+                                st.success(f"Загружен: {data['filename']} ({data['size']} байт)")
+                                st.info("Файл появится в списке выше — обнови страницу (F5)")
+                            else:
+                                st.error(f"Ошибка: {data.get('detail', '')}")
+                        except Exception as e:
+                            st.error(f"Ошибка загрузки: {e}")
+            with col2:
+                if st.button("Загрузить и сразу проверить (Data Gate)", key="btn_upload_run"):
+                    if _http is None:
+                        st.error("Библиотека requests не установлена")
+                    else:
+                        try:
+                            resp = _http.post(
+                                f"{API}/api/v1/upload",
+                                files={"file": (uploaded.name, uploaded.getvalue(), "text/csv")},
+                                timeout=30,
+                            )
+                            data = resp.json()
+                            if data.get("status") == "ok":
+                                st.success(f"Загружен: {data['filename']}")
+                                _run_gate("data_gate", f"data/{data['filename']}")
+                            else:
+                                st.error(f"Ошибка: {data.get('detail', '')}")
+                        except Exception as e:
+                            st.error(f"Ошибка: {e}")
     with tabs[1]:
         st.subheader("Паспорт модели (G0)")
         st.caption("owner, Tier, источник, назначение, lineage, история проверок. TODO.")
