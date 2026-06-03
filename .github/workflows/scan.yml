@@ -1,0 +1,54 @@
+name: Security Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      check_type:
+        description: "Gate to run"
+        required: true
+        type: choice
+        options:
+          - data_gate
+          - code_gate
+          - dependency_gate
+        default: "data_gate"
+      target:
+        description: "Target file or directory"
+        required: false
+        type: string
+        default: "data/train_m1_clean.csv"
+
+jobs:
+  run-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pandas numpy
+
+      - name: Install security tools
+        if: inputs.check_type == 'code_gate'
+        run: pip install bandit pip-audit || true
+
+      - name: Generate demo datasets
+        if: inputs.check_type == 'data_gate'
+        run: python data/make_datasets.py
+
+      - name: Run security gate
+        run: |
+          case "${{ inputs.check_type }}" in
+            data_gate)
+              python src/gates/data_gate/data_gate.py --path "${{ inputs.target }}" --json
+              ;;
+            code_gate)
+              python src/gates/code_gate/code_gate.py --path "${{ inputs.target }}" --stage ci --json
+              ;;
+            dependency_gate)
+              python src/gates/dependency_gate/dependency_gate.py --path "${{ inputs.target }}" --json
+              ;;
+          esac

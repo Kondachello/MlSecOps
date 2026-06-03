@@ -12,6 +12,7 @@ mlflow
 pandas
 requests
 python-dotenv
+python-multipart
 
 # UI
 streamlit

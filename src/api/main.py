@@ -6,16 +6,23 @@
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Optional
 
 try:
-    from fastapi import FastAPI, Request
+    from fastapi import FastAPI, HTTPException, Request, UploadFile
     from pydantic import BaseModel
 except Exception:  # graceful для py_compile без установленных пакетов
     FastAPI = None  # type: ignore
 
     class BaseModel:  # type: ignore
         pass
+
+try:
+    import requests as _http
+except Exception:
+    _http = None  # type: ignore
 
 app = FastAPI(title="MLSecOps Gatekeeper") if FastAPI else None
 
@@ -26,6 +33,17 @@ class VerifyRequest(BaseModel):
     git_sha: str
     requested_by: str
     reason: str
+
+
+class TriggerWorkflowRequest(BaseModel):
+    check_type: str
+    target: str = "data/train_m1_clean.csv"
+
+
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+GITHUB_REPO = os.getenv("GITHUB_REPO", "")
+GITHUB_REF = os.getenv("GITHUB_REF", "sasha")
+UPLOAD_DIR = Path(__file__).resolve().parents[2] / "data"
 
 
 # ---- видимость / выпадашки ----
@@ -91,6 +109,46 @@ if app:
     def scan(asset_type: str, asset_id: str, request: Request):
         """Кнопка 'просканировать ресурс всеми применимыми образами' → запуск гейтов/workflow. TODO."""
         return {"status": "TODO"}
+
+    # ---- CI/CD интеграция (GitHub Actions) ----
+    @app.post("/api/v1/ci/trigger")
+    def trigger_workflow(req: TriggerWorkflowRequest):
+        """Запустить GitHub Actions workflow для проверки безопасности."""
+        if not _http:
+            raise HTTPException(500, "requests library not installed")
+        if not GITHUB_TOKEN or not GITHUB_REPO:
+            raise HTTPException(
+                500, "Set GITHUB_TOKEN and GITHUB_REPO environment variables")
+        allowed = {"data_gate", "code_gate", "dependency_gate"}
+        if req.check_type not in allowed:
+            raise HTTPException(400, f"check_type must be one of {allowed}")
+        resp = _http.post(
+            f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/scan.yml/dispatches",
+            headers={
+                "Authorization": f"Bearer {GITHUB_TOKEN}",
+                "Accept": "application/vnd.github.v3+json",
+            },
+            json={
+                "ref": GITHUB_REF,
+                "inputs": {"check_type": req.check_type, "target": req.target},
+            },
+            timeout=10,
+        )
+        if resp.status_code == 204:
+            return {"status": "ok", "detail": "Workflow triggered", "repo": GITHUB_REPO}
+        raise HTTPException(resp.status_code, resp.text)
+
+    @app.post("/api/v1/upload")
+    def upload_file(file: UploadFile):
+        """Загрузить CSV-файл на сервер."""
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        safe_name = Path(file.filename).name
+        if not safe_name.lower().endswith(".csv"):
+            raise HTTPException(400, "Only .csv files are accepted")
+        dest = UPLOAD_DIR / safe_name
+        content = file.file.read()
+        dest.write_bytes(content)
+        return {"status": "ok", "filename": safe_name, "size": len(content)}
 
     # ---- False Positives ----
     @app.post("/api/v1/findings/{finding_id}/false_positive")

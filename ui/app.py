@@ -11,8 +11,10 @@ import os
 
 try:
     import streamlit as st
+    import requests as _http
 except Exception:  # graceful для py_compile
     st = None
+    _http = None
 
 API = os.getenv("GATEKEEPER_URL", "http://backend:8000")
 APP_DEBUG = os.getenv("APP_DEBUG", "false").lower() == "true"
@@ -42,8 +44,66 @@ def render():
 
     tabs = st.tabs(TABS)
     with tabs[0]:
-        st.subheader("Отправить ресурс на верификацию безопасности")
-        st.caption("Выбор модели/Run/Git SHA → /api/v1/verify. TODO: форма + прогресс джоб.")
+        st.subheader("Запустить проверку безопасности")
+
+        check_type = st.selectbox(
+            "Тип проверки (Gate)",
+            ["data_gate", "code_gate", "dependency_gate"],
+        )
+
+        if check_type == "data_gate":
+            target = st.selectbox("Датасет", [
+                "data/train_m1_clean.csv",
+                "data/train_m1_poisoned.csv",
+                "data/prod_traffic_drifted.csv",
+            ])
+        else:
+            target = "."
+            st.info("Проверка будет запущена на всём репозитории")
+
+        if st.button("Запустить проверку в CI"):
+            if _http is None:
+                st.error("Библиотека requests не установлена")
+            else:
+                try:
+                    resp = _http.post(
+                        f"{API}/api/v1/ci/trigger",
+                        json={"check_type": check_type, "target": target},
+                        timeout=10,
+                    )
+                    data = resp.json()
+                    if data.get("status") == "ok":
+                        st.success("Workflow запущен!")
+                        repo = data.get("repo", "")
+                        if repo:
+                            st.markdown(
+                                f"[Открыть GitHub Actions](https://github.com/{repo}/actions)")
+                    else:
+                        st.error(f"Ошибка: {data.get('detail', resp.text)}")
+                except Exception as e:
+                    st.error(f"Не удалось подключиться к бэкенду: {e}")
+
+        st.divider()
+        st.subheader("Загрузить CSV для проверки")
+        uploaded = st.file_uploader("Выберите CSV-файл", type=["csv"])
+        if uploaded is not None and st.button("Загрузить на сервер"):
+            if _http is None:
+                st.error("Библиотека requests не установлена")
+            else:
+                try:
+                    resp = _http.post(
+                        f"{API}/api/v1/upload",
+                        files={"file": (uploaded.name, uploaded.getvalue(), "text/csv")},
+                        timeout=30,
+                    )
+                    data = resp.json()
+                    if data.get("status") == "ok":
+                        st.success(
+                            f"Файл загружен: {data['filename']} ({data['size']} байт)")
+                    else:
+                        st.error(f"Ошибка: {data.get('detail', '')}")
+                except Exception as e:
+                    st.error(f"Ошибка загрузки: {e}")
     with tabs[1]:
         st.subheader("Паспорт модели (G0)")
         st.caption("owner, Tier, источник, назначение, lineage, история проверок. TODO.")
