@@ -114,7 +114,7 @@ jobs:
       - name: "Step 3b — trivy image scan (CRITICAL/HIGH CVE) — единственный запуск trivy"
         run: |
           python src/gates/code_gate/code_gate.py \
-            --path . --stage deploy \
+            --path . --stage deploy --fail-closed \
             --image "${{ env.IMAGE_TAG }}" \
             --json | tee /tmp/trivy_report.json
           python -c "
@@ -164,7 +164,7 @@ jobs:
             python src/gates/model_gate/model_gate.py \
               --path "$ARTIFACT" \
               --cosign-key /tmp/cosign.pub \
-              --require-signature \
+              --require-signature --fail-closed \
               --json | tee /tmp/g4_sig_report.json
             python -c "
           import json, sys

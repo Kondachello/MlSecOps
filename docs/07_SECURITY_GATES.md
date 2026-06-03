@@ -162,6 +162,15 @@ docker run --rm --network none \
 
 **Угрозы:** #5 extraction, #6 DoS, #11 evasion, #12 DLP, #13 membership (+P3). **Файл:** `src/serve/`.
 
+## 7.3bis fail-closed (строгий режим) и Semgrep
+
+- **fail-closed:** каждый гейт принимает флаг `--fail-closed` — проверка со статусом `SKIP`
+  (нет инструмента/данных) трактуется как `FAIL`. Для критичных активов «нет сканера → блок».
+  Включён в `deploy.yml` (G2 deploy + G4 подпись). В CI clean-pass шагах НЕ включён.
+  Подробно — [`20_CONTROLS_COVERAGE.md`](20_CONTROLS_COVERAGE.md) §20.2.
+- **Semgrep (ML-aware SAST):** добавлен в G2 `code_gate` (`check_semgrep`) рядом с bandit;
+  нет бинарника → `SKIP`.
+
 ## 7.4 Сквозные механизмы (не гейт, но обязательны)
 
 | Механизм | Инструмент | Назначение |

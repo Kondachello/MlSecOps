@@ -157,9 +157,16 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="G3 Supply/Dependency Gate")
     ap.add_argument("--path", required=True, help="папка с requirements.txt или путь к файлу")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--fail-closed", action="store_true",
+                    help="SKIP трактовать как FAIL для критичных активов")
     args = ap.parse_args()
 
     results = gate_check(args.path)
+    if args.fail_closed:
+        for r in results:
+            if r.get("status") == "SKIP":
+                r["status"] = "FAIL"
+                r["detail"] = "fail-closed: " + r.get("detail", "")
     report = build_report(args.path, results)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     sys.exit(0 if report["passed"] else 1)

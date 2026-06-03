@@ -15,13 +15,14 @@ from __future__ import annotations
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from src.common.features import featurize_row  # noqa: E402
-from src.common.audit import log_feature  # noqa: E402
+from src.common.audit import log_event, log_feature  # noqa: E402
 
 try:
     from fastapi import FastAPI, Request
@@ -38,7 +39,35 @@ except Exception:  # graceful для py_compile без пакетов
 
 RATE_LIMIT_PER_MIN = int(os.getenv("RATE_LIMIT_PER_MIN", "100"))
 MAX_PAYLOAD_BYTES = int(os.getenv("MAX_PAYLOAD_BYTES", str(64 * 1024)))
+MAX_INFLIGHT = int(os.getenv("MAX_INFLIGHT", "32"))        # DOS-01 load-shedding → 503
+COST_BUDGET = int(os.getenv("COST_BUDGET", "20000"))       # DOW-01 бюджет «стоимости»/мин → 429
+OOD_AMOUNT_MAX = float(os.getenv("OOD_AMOUNT_MAX", "100000"))  # RT-02 порог аномалии входа
 MODEL_PATH = os.getenv("MODEL_PATH", str(ROOT / "artifacts" / "credit_scoring.onnx"))
+
+# DOS-01: глобальный лимит одновременных запросов (load-shedding). Сверх лимита → 503.
+_inflight = threading.BoundedSemaphore(MAX_INFLIGHT)
+
+# DOW-01: бюджет «стоимости» на ключ за минуту (исчерпан → 429).
+_cost: dict[str, list] = {}
+
+
+def cost_exceeded(key: str, cost: int) -> bool:
+    now = time.time()
+    items = [(t, c) for t, c in _cost.get(key, []) if now - t < 60]
+    items.append((now, cost))
+    _cost[key] = items
+    return sum(c for _, c in items) > COST_BUDGET
+
+
+def ood_check(amount: float, age: int) -> tuple[bool, str]:
+    """RT-02: грубый OOD/adversarial-детект по диапазонам/соотношению. suspect=True → Finding."""
+    if amount > OOD_AMOUNT_MAX:
+        return True, f"amount={amount} вне обучающего диапазона (> {OOD_AMOUNT_MAX:g})"
+    if age <= 0 or age >= 110:
+        return True, f"age={age} аномален"
+    if age > 0 and amount / age > OOD_AMOUNT_MAX / 10:
+        return True, "аномальное соотношение amount/age"
+    return False, ""
 
 # --- DLP-маски для логов (#12) ---
 RE_CARD = re.compile(r"\b(\d{4})[ -]?\d{4}[ -]?\d{4}[ -]?(\d{4})\b")
@@ -133,17 +162,32 @@ if app:
         cl = request.headers.get("content-length")
         if cl and int(cl) > MAX_PAYLOAD_BYTES:
             return JSONResponse({"detail": "payload too large"}, status_code=413)
-        # 2) rate-limit → 429
         key = request.headers.get("x-api-key") or (request.client.host if request.client else "anon")
+        # 2) RT-01 rate-limit → 429
         if _limiter.hit(key):
             return JSONResponse({"detail": "Too Many Requests"}, status_code=429)
-        return await call_next(request)
+        # 3) DOW-01 cost/token-quota → 429
+        if cost_exceeded(key, cost=int(cl or 1)):
+            return JSONResponse({"detail": "Cost budget exceeded"}, status_code=429)
+        # 4) DOS-01 load-shedding → 503 (сверх MAX_INFLIGHT одновременных — отбрасываем, ядро живо)
+        if not _inflight.acquire(blocking=False):
+            return JSONResponse({"detail": "Service overloaded, retry later"}, status_code=503)
+        try:
+            return await call_next(request)
+        finally:
+            _inflight.release()
 
     @app.post("/predict")
     def predict(req: ScoreRequest):
         feats = featurize_row(req.amount, req.age)   # парность с train (#19)
+        # RT-02 OOD/adversarial-детект: подозрительный вход → suspect + Finding (не блокируем)
+        suspect, why = ood_check(req.amount, req.age)
+        if suspect:
+            log_event("serve", "system", "ood_suspect", asset="credit_scoring",
+                      result="pending", details={"control": "RT-02", "reason": why})
         proba = _model.proba(feats)
         out = reduce_output(proba)
+        out["ood_suspect"] = suspect
         # DLP перед логированием (#12) + лог фич для G6 PSI на живом трафике
         print(dlp_mask(f"[infer] amount={req.amount} age={req.age} text={req.text!r}"))
         log_feature("credit_scoring", {"amount": req.amount, "age": req.age},

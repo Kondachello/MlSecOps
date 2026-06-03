@@ -207,8 +207,23 @@ def check_image_trivy(image: str) -> dict:
             "evidence": {"cves": cves}}
 
 
+def check_semgrep(path: str) -> dict:
+    """ML-aware SAST через semgrep (дополняет bandit). Нет бинарника → SKIP."""
+    rc, out = _run(["semgrep", "--config", "auto", "--json", "--quiet", path])
+    if rc == 127:
+        return {"check": "semgrep", "status": "SKIP", "severity": "high",
+                "detail": "semgrep не установлен", "evidence": {}}
+    n = 0
+    try:
+        n = len(json.loads(out).get("results", []))
+    except Exception:  # noqa: BLE001
+        n = 1 if rc != 0 else 0
+    return {"check": "semgrep", "status": "FAIL" if n else "PASS", "severity": "high",
+            "detail": f"semgrep findings: {n}" if n else "ok", "evidence": {"count": n}}
+
+
 def gate_check(path: str, *, stage: str = "ci", image: str | None = None) -> list[dict]:
-    results = [check_secrets(path), check_sast(path), check_cve(path)]
+    results = [check_secrets(path), check_sast(path), check_semgrep(path), check_cve(path)]
     if stage == "deploy" and image:  # trivy запускается РОВНО ОДИН раз — на деплое
         results.append(check_image_trivy(image))
     return results
@@ -231,9 +246,16 @@ def main() -> None:
     ap.add_argument("--stage", choices=["ci", "deploy"], default="ci")
     ap.add_argument("--image", default=None, help="docker-образ для trivy (только stage=deploy)")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--fail-closed", action="store_true",
+                    help="SKIP трактовать как FAIL (нет сканера → блок для критичных активов)")
     args = ap.parse_args()
 
     results = gate_check(args.path, stage=args.stage, image=args.image)
+    if args.fail_closed:
+        for r in results:
+            if r.get("status") == "SKIP":
+                r["status"] = "FAIL"
+                r["detail"] = "fail-closed: " + r.get("detail", "")
     report = build_report(args.path, results)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     sys.exit(0 if report["passed"] else 1)

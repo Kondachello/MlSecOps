@@ -15,11 +15,18 @@
 
 | Защита | Механизм | Поведение |
 |---|---|---|
-| **Rate limiting** (анти-extraction/DoS) | Redis-счётчик по API-key/IP | `>N req/min` → `429 Too Many Requests` |
-| **Валидация входа** | Pydantic-схема (`max_length`, диапазоны: `amount>0`, `0≤age≤120`) | нарушение → `422` |
-| **Лимит размера payload** | лимит тела запроса FastAPI | большой payload → `413/422` |
-| **Output reduction** (анти-extraction/membership) | класс/округление вместо сырых logits | `{"decision":"approve"}` вместо `0.8123491` |
-| **DLP в логах** | middleware regex/Presidio перед записью | маскирование карт `****-1234`, ФИО |
+| **RT-01 Rate limiting** (анти-extraction/DoS) | Redis-счётчик по API-key/IP | `>N req/min` → `429 Too Many Requests` |
+| **DOS-01 Load-shedding** | глобальный семафор `MAX_INFLIGHT` (threading) | сверх лимита одновременных → `503` (ядро живо) |
+| **DOW-01 Cost/token-quota** | бюджет «стоимости» на ключ за минуту | исчерпан → `429` |
+| **RT-05 Валидация входа** | Pydantic-схема (`max_length`, `amount>0`, `0≤age≤120`) | нарушение → `422`; payload-лимит → `413` |
+| **RT-02 OOD/adversarial-детект** | проверка диапазонов/соотношений (`ood_check`) | вход-выброс → `suspect=true` + Finding (не блок) |
+| **RT-03 Output reduction** (анти-extraction/membership) | класс вместо сырых logits | `{"decision":"approve"}` вместо `0.8123491` |
+| **DLP-01 DLP в логах** | middleware regex/Presidio перед записью | маскирование карт `****-1234`, ФИО |
+
+> Все защиты имеют ID контроля (см. [`20_CONTROLS_COVERAGE.md`](20_CONTROLS_COVERAGE.md)).
+> Реализованы в `src/serve/app.py`: `_limiter` (RT-01), `_inflight` (DOS-01), `cost_exceeded`
+> (DOW-01), `ood_check` (RT-02), `reduce_output` (RT-03), `dlp_mask` (DLP-01). Срабатывания
+> пишутся в Audit Trail через `audit.log_event` (БД A → иначе JSONL-фолбэк).
 
 P3 (GenAI, если берём 4-ю модель): guardrails против prompt-injection, нормализатор Base64/Hex,
 output-DLP системного промпта, квоты `max_tokens`/таймаут, HITL на деструктивные tools агента.

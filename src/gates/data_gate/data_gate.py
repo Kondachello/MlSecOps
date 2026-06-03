@@ -202,9 +202,16 @@ def main() -> None:
     ap.add_argument("--path", required=True, help="путь к датасету (csv/parquet)")
     ap.add_argument("--schema", nargs="*", default=None, help="эталонный набор колонок")
     ap.add_argument("--json", action="store_true", help="печать JSON-отчёта")
+    ap.add_argument("--fail-closed", action="store_true",
+                    help="SKIP трактовать как FAIL (для критичных активов: нет инструмента → блок)")
     args = ap.parse_args()
 
     results = gate_check(args.path, schema=args.schema)
+    if args.fail_closed:
+        for r in results:
+            if r.get("status") == "SKIP":
+                r["status"] = "FAIL"
+                r["detail"] = "fail-closed: " + r.get("detail", "")
     report = build_report(args.path, results)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     sys.exit(0 if report["passed"] else 1)

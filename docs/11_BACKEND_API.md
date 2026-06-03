@@ -27,6 +27,20 @@ RBAC, интеграция с MLflow. Пакет `src/api/` (+ слой `core/`)
 | `POST` | `/api/v1/scan/{asset_type}/{id}` | DS/DE/MLSecOps | «просканировать ресурс всеми применимыми образами» |
 | `GET` | `/api/v1/findings` `/events` `/registry` | любой (CEO read-only) | видимость |
 | `POST` | `/api/v1/admin/users` `/roles` `/access` | MLSecOps | RBAC-админка |
+| `GET` | `/api/v1/admin/users` | MLSecOps | список пользователей с правами (UI «Пользователи») |
+| `GET` | `/api/v1/models/{name}/versions` | любой | версии модели + lineage/гейты (Реестр/Паспорт) |
+| `GET` | `/api/v1/datasets/{key}` | по доступу | карточка датасета + отчёт G1 |
+| `GET` | `/api/v1/resources` | MLSecOps | ресурсы для раннера гейтов (тип→применимые гейты) |
+| `GET` | `/api/v1/events/verify_chain` | любой | проверка целостности Audit Trail (hash-chain) |
+| `GET` | `/api/v1/cicd/runs` | MLSecOps | прогоны CI/CD (run→jobs→steps→log) для «CI/CD логи» |
+| `POST` | `/api/v1/scan` | MLSecOps | раннер: матрица ресурс×гейт (`{gates, resources, fail_closed}`) |
+| `POST` | `/api/v1/findings/{id}/fp` `/rerun` `/close` | MLSecOps | действия над находкой |
+| `GET` | `/api/v1/controls` | любой | каталог контролей (карта покрытия), см. `20_CONTROLS_COVERAGE` |
+| `POST` | `/api/v1/controls/{id}/accept` | MLSecOps | RiskAcceptance (принять остаточный риск) |
+
+> Все эти ручки уже **объявлены в `src/api/main.py`** как контракт (возвращают TODO-заглушки).
+> UI вызывает их через `_api_get/_api_post` с **fallback на моки** — при реализации A
+> переключение автоматическое, без правок фронта.
 
 ## 11.3 Контракт `POST /api/v1/verify`
 

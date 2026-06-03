@@ -53,6 +53,10 @@ CI/CD = **GitHub Actions**, но раннер — **self-hosted**, поднят�
 
 HITL: для `Tier=HIGH` `deploy.yml` **стоит** до `approve` от MLSecOps (см. §11.2).
 
+**fail-closed на деплое:** в `deploy.yml` гейты вызываются с `--fail-closed` (G2 deploy + G4
+подпись) — `SKIP` (нет инструмента) трактуется как `FAIL`. Прод-путь не fail-open. См.
+[`20_CONTROLS_COVERAGE.md`](20_CONTROLS_COVERAGE.md) §20.2.
+
 ## 12.4 Триггеры из UI
 
 Кнопки «Просканировать ресурс» / RUN / DEPLOY дёргают workflow через

@@ -129,6 +129,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="G5 Compliance/Registry Gate")
     ap.add_argument("--card", required=True, help="путь к JSON-паспорту модели")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--fail-closed", action="store_true",
+                    help="SKIP трактовать как FAIL для критичных активов")
     args = ap.parse_args()
 
     card_path = Path(args.card)
@@ -141,6 +143,11 @@ def main() -> None:
         card = json.load(f)
 
     results = gate_check(card)
+    if args.fail_closed:
+        for r in results:
+            if r.get("status") == "SKIP":
+                r["status"] = "FAIL"
+                r["detail"] = "fail-closed: " + r.get("detail", "")
     report = build_report(card.get("name", args.card), results)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     sys.exit(0 if report["passed"] else 1)

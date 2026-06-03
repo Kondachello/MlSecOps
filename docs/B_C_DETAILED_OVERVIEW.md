@@ -274,7 +274,7 @@ docker run --rm --network none -v "$ARTIFACT:/in:ro" mlsec-gate-data --path /in 
 
 ### 3.7 Веб-интерфейс — `ui/app.py` (Streamlit)
 
-9 вкладок, единый процесс (не россыпь кнопок). Пока A не отдаёт реальные данные, UI работает на
+10 вкладок, единый процесс (не россыпь кнопок). Пока A не отдаёт реальные данные, UI работает на
 **моках** с автоматическим переключением на API (`_api_get → mock`). Вкладки:
 
 1. **Кабинет/Верификация** — форма (модель, Run ID, Git SHA) + наглядный прогресс по гейтам.
@@ -391,7 +391,7 @@ docker run --rm --network none -v "$ARTIFACT:/in:ro" mlsec-gate-data --path /in 
 - `src/serve/app.py` `app_text.py` `app_risk.py` — инференс + G7; `attack_sim.py` — атака
 - `src/monitor/monitor.py` — G6 (PSI + подмена)
 - `tests/test_consistency.py` `conftest.py` — #19
-- `ui/app.py` — веб-интерфейс (9 вкладок)
+- `ui/app.py` — веб-интерфейс (10 вкладок)
 
 **B+C совместно (запуск без A):**
 - `Makefile`, `scripts/demo_local.sh`, `docs/19_LOCAL_DEV_WITHOUT_A.md`

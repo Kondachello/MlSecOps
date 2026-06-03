@@ -126,3 +126,76 @@ if app:
     def admin_access(request: Request):
         """Выдача доступа к датасету (+can_export). RBAC: MLSecOps. TODO."""
         return {"status": "TODO"}
+
+    @app.get("/api/v1/admin/users")
+    def list_users():
+        """Список пользователей с ролями/правами (UI «Пользователи»). TODO: из users/roles."""
+        return []  # TODO
+
+    # ---- видимость по объектам (UI читает эти ручки) ----
+    @app.get("/api/v1/models/{name}/versions")
+    def model_versions(name: str):
+        """Версии модели с lineage/гейтами (UI Реестр/Паспорт). TODO: model_versions."""
+        return []  # TODO
+
+    @app.get("/api/v1/datasets/{key}")
+    def dataset_card(key: str):
+        """Карточка датасета + отчёт G1 (UI Паспорт «Открыть датасет»). TODO."""
+        return {}  # TODO
+
+    @app.get("/api/v1/resources")
+    def resources():
+        """Ресурсы для раннера гейтов (datasets/models/code + применимые гейты). TODO."""
+        return []  # TODO
+
+    @app.get("/api/v1/events/verify_chain")
+    def verify_chain():
+        """Проверка целостности Audit Trail (hash-chain). TODO: core.db.verify_chain()."""
+        return {"ok": True, "verified": 0, "broken_at": None}  # TODO
+
+    @app.get("/api/v1/cicd/runs")
+    def cicd_runs():
+        """Прогоны CI/CD (run→jobs→steps→log) для UI «CI/CD логи». RBAC: MLSecOps.
+        TODO: проксирование к GitHub Actions API / чтение статусов self-hosted runner."""
+        return []  # TODO
+
+    # ---- раннер гейтов: матрица ресурс×гейт ----
+    @app.post("/api/v1/scan")
+    def scan_batch(request: Request):
+        """Прогнать выбранные гейты на нескольких ресурсах (fail_closed опц.).
+        Запускает образы гейтов (docker run mlsec-gate-*), пишет findings/events.
+        Возврат: {matrix:[{gate:status}], detail:{'res|gate':[status,msg]}, resources:[...]}. TODO."""
+        return {"matrix": [], "detail": {}, "resources": []}  # TODO
+
+    # ---- находки: действия (UI Находки) ----
+    @app.post("/api/v1/findings/{finding_id}/fp")
+    def finding_fp(finding_id: int, request: Request):
+        """Отметить находку False Positive. RBAC: MLSecOps. +reason +event. TODO."""
+        return {"ok": True}
+
+    @app.post("/api/v1/findings/{finding_id}/rerun")
+    def finding_rerun(finding_id: int, request: Request):
+        """Перезапустить проверку по находке. RBAC: MLSecOps. TODO."""
+        return {"ok": True, "status": "queued"}
+
+    @app.post("/api/v1/findings/{finding_id}/close")
+    def finding_close(finding_id: int, request: Request):
+        """Закрыть находку. RBAC: MLSecOps. TODO."""
+        return {"ok": True}
+
+    # ---- GRC: каталог контролей и принятие остаточного риска ----
+    @app.get("/api/v1/controls")
+    def controls():
+        """Каталог контролей (угроза→контроль→тест→стандарты+статус) для «Карты покрытия».
+        Источник: src.common.controls.CONTROLS + статусы accepted из БД. TODO."""
+        try:
+            from src.common.controls import CONTROLS
+            return CONTROLS
+        except Exception:  # noqa: BLE001
+            return []
+
+    @app.post("/api/v1/controls/{control_id}/accept")
+    def control_accept(control_id: str, request: Request):
+        """RiskAcceptance: принять остаточный риск контроля (GRC exception).
+        RBAC: MLSecOps. Персистит в БД + событие. TODO."""
+        return {"ok": True, "control": control_id, "status": "accepted"}

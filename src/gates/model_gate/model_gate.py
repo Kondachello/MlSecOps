@@ -240,6 +240,8 @@ def main() -> None:
     ap.add_argument("--consistency-script", default=None,
                     help="pytest-скрипт для проверки train↔serve consistency")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--fail-closed", action="store_true",
+                    help="SKIP трактовать как FAIL (нет modelscan/cosign → блок для критичных)")
     args = ap.parse_args()
 
     results = gate_check(
@@ -249,6 +251,11 @@ def main() -> None:
         require_signature=args.require_signature,
         consistency_script=args.consistency_script,
     )
+    if args.fail_closed:
+        for r in results:
+            if r.get("status") == "SKIP":
+                r["status"] = "FAIL"
+                r["detail"] = "fail-closed: " + r.get("detail", "")
     report = build_report(args.path, results)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     sys.exit(0 if report["passed"] else 1)
