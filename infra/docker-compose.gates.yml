@@ -1,0 +1,26 @@
+# docker-compose.gates.yml — сборка изолированных образов гейтов (1 гейт = 1 образ).
+# См. docs/07_SECURITY_GATES.md §7.2. Сборка:
+#   docker compose -f infra/docker-compose.gates.yml build
+# Запуск гейта (контракт):
+#   docker run --rm --network none -v "$ART:/in:ro" mlsec-gate-<name> --path /in --json
+
+services:
+  gate-data:
+    build: { context: ../src/gates/data_gate }
+    image: mlsec-gate-data
+
+  gate-code:
+    build: { context: ../src/gates/code_gate }
+    image: mlsec-gate-code
+
+  gate-dependency:
+    build: { context: ../src/gates/dependency_gate }
+    image: mlsec-gate-dependency
+
+  gate-model:
+    build: { context: ../src/gates/model_gate }
+    image: mlsec-gate-model
+
+  gate-registry:
+    build: { context: ../src/gates/registry_gate }
+    image: mlsec-gate-registry

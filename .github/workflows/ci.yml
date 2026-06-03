@@ -78,3 +78,19 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
       - run: python tests/smoke_db.py
+
+  build-gates:
+    # Сборка изолированных образов гейтов (1 гейт = 1 образ). docs/07 §7.2.
+    runs-on: [self-hosted]
+    steps:
+      - uses: actions/checkout@v4
+      - name: build gate images
+        run: docker compose -f infra/docker-compose.gates.yml build
+      - name: smoke — gate runs in container (clean/bad)
+        run: |
+          docker run --rm --network none -v "$PWD/demo/requirements_clean.txt:/in:ro" \
+            mlsec-gate-dependency --path /in --json
+          if docker run --rm --network none -v "$PWD/demo/insecure/requirements_vuln.txt:/in:ro" \
+            mlsec-gate-dependency --path /in --json; then
+            echo "gate не сработал в контейнере"; exit 1
+          else echo "ok, заблокировано из контейнера"; fi
