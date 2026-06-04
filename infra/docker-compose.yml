@@ -81,7 +81,6 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-change_me}
 
   mlflow:
-    # Готовый образ — без pip при каждом up (на Windows build часто даёт EOF)
     image: ghcr.io/mlflow/mlflow:v2.14.1
     expose: ["5000"]
     volumes:
@@ -91,15 +90,22 @@ services:
       - |
         set -eu
         pip install -q --no-cache-dir psycopg2-binary
-        ART="$${MLFLOW_ARTIFACT_ROOT:-file:///mlflow-artifacts}"
-        echo "mlflow: postgres://$${POSTGRES_USER}@postgres:5432/$${MLFLOW_POSTGRES_DB} artifacts=$${ART}"
+        PG_HOST=postgres
+        PG_DB=$${MLFLOW_POSTGRES_DB:-mlflow}
+        ART=$${MLFLOW_ARTIFACT_ROOT:-file:///mlflow-artifacts}
+        URI="postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@$${PG_HOST}:5432/$${PG_DB}"
+        echo "mlflow: waiting for $${PG_HOST}..."
+        for i in $$(seq 1 60); do
+          python -c "import socket; socket.gethostbyname('$${PG_HOST}')" 2>/dev/null && break
+          sleep 2
+        done
+        echo "mlflow: $${URI} artifacts=$${ART}"
         exec mlflow server --host 0.0.0.0 --port 5000 \
-          --backend-store-uri "postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@postgres:5432/$${MLFLOW_POSTGRES_DB}" \
+          --backend-store-uri "$${URI}" \
           --default-artifact-root "$${ART}"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-mlsec_app}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
-      POSTGRES_DB: ${POSTGRES_DB:-mlsec}
       MLFLOW_POSTGRES_DB: ${MLFLOW_POSTGRES_DB:-mlflow}
       # file:// стабильнее на локальном стенде; для S3: MLFLOW_ARTIFACT_ROOT=s3://mlflow/
       MLFLOW_ARTIFACT_ROOT: ${MLFLOW_ARTIFACT_ROOT:-file:///mlflow-artifacts}
