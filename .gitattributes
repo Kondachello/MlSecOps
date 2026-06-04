@@ -1,0 +1,2 @@
+*.sh text eol=lf
+infra/mlflow-entrypoint.sh text eol=lf

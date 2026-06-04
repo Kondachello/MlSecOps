@@ -1,0 +1,7 @@
+# Обучение (модель №1, табличная). Артефакт экспортируется в ONNX (G4-разрешённый формат).
+scikit-learn
+skl2onnx
+onnx
+pandas
+numpy
+mlflow

@@ -1,0 +1,192 @@
+# deploy.yml — деплой в прод. Hardening: fail-closed G2, G4 SHA, cosign verify, WORM, smoke.
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_name: { description: "имя модели", required: true, default: "credit_scoring" }
+      version:    { description: "версия", required: true, default: "1.0.0" }
+      expected_sha: { description: "SHA-256 из реестра", required: false, default: "" }
+      train_run_id: { description: "ID run train.yml (artifact train-gates)", required: false, default: "" }
+  repository_dispatch:
+    types: [deploy]
+
+env:
+  REQUIRE_REGISTRY_SHA: ${{ vars.GATEKEEPER_URL != '' && 'true' || 'false' }}
+  REQUIRE_COSIGN: ${{ vars.REQUIRE_COSIGN || 'false' }}
+  USE_GATEKEEPER: ${{ vars.GATEKEEPER_URL != '' && 'true' || 'false' }}
+
+jobs:
+  setup:
+    runs-on: ubuntu-22.04
+    outputs:
+      model_name: ${{ steps.p.outputs.model_name }}
+      version: ${{ steps.p.outputs.version }}
+      expected_sha: ${{ steps.p.outputs.expected_sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: p
+        env:
+          GITHUB_EVENT: ${{ toJson(github.event) }}
+        run: |
+          python - <<'PY'
+          import json, os
+          ev = json.loads(os.environ["GITHUB_EVENT"])
+          inp, cp = ev.get("inputs") or {}, ev.get("client_payload") or {}
+          def g(k, d=""):
+              v = inp.get(k) or cp.get(k) or d
+              return str(v) if v is not None else d
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"model_name={g('model_name')}\n")
+              f.write(f"version={g('version')}\n")
+              f.write(f"expected_sha={g('expected_sha')}\n")
+          PY
+
+  deploy:
+    needs: setup
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install --no-cache-dir -r requirements.txt
+
+      - name: Download train artifact (optional)
+        if: github.event.inputs.train_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: train-gates
+          run-id: ${{ github.event.inputs.train_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve model artifact path
+        id: art
+        run: |
+          if [ -f artifacts/model_path.txt ]; then
+            echo "path=$(cat artifacts/model_path.txt)" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=" >> "$GITHUB_OUTPUT"
+            echo "Нет artifacts/model_path.txt — сначала train.yml или укажите train_run_id" >&2
+            exit 1
+          fi
+
+      - name: Resolve expected SHA from registry
+        id: sha
+        env:
+          GATEKEEPER_URL: ${{ vars.GATEKEEPER_URL }}
+          MODEL_NAME: ${{ needs.setup.outputs.model_name }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          EXPECTED: ${{ needs.setup.outputs.expected_sha }}
+        run: |
+          if [ -n "$EXPECTED" ]; then
+            echo "sha=$EXPECTED" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "${GATEKEEPER_URL:-}" ]; then
+            if [ "${REQUIRE_REGISTRY_SHA}" = "true" ]; then
+              echo "expected_sha required" >&2
+              exit 1
+            fi
+            echo "sha=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          SHA=$(curl -fsS "${GATEKEEPER_URL}/api/v1/registry" | python -c "
+          import json,sys,os
+          d=json.load(sys.stdin)
+          for m in d.get('models',[]):
+            if m['name']==os.environ['MODEL_NAME'] and str(m['version'])==os.environ['VERSION']:
+              print(m.get('sha256') or ''); break
+          ")
+          if [ -z "$SHA" ] && [ "${REQUIRE_REGISTRY_SHA}" = "true" ]; then
+            echo "model SHA not in registry" >&2; exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Preflight — approved / dual HITL
+        env:
+          MODEL_NAME: ${{ needs.setup.outputs.model_name }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          USE_GATEKEEPER: ${{ env.USE_GATEKEEPER }}
+          GATEKEEPER_URL: ${{ vars.GATEKEEPER_URL }}
+        run: bash scripts/ci/preflight_deploy.sh
+
+      - name: install G2 scanners + trivy + semgrep
+        run: |
+          pip install --no-cache-dir bandit pip-audit
+          bash scripts/ci/install_semgrep.sh
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
+            | tar -xz -C /usr/local/bin gitleaks
+          bash scripts/ci/install_trivy.sh
+
+      - name: SBOM
+        run: bash scripts/ci/generate_sbom.sh deploy-sbom.json requirements.txt
+
+      - name: build inference image (non-root)
+        run: docker build -f infra/Dockerfile.backend -t mlsec-inference:ci .
+
+      - name: G2 deploy + trivy (fail-closed)
+        run: |
+          python src/gates/code_gate/code_gate.py \
+            --path . --stage deploy --image mlsec-inference:ci --fail-closed --json | tee gate-g2-deploy.json
+          python scripts/ci/assert_gate_checks.py --require secrets sast cve_deps semgrep trivy_image --no-fail gate-g2-deploy.json
+
+      - name: G4 Model Gate (SHA, fail-closed)
+        run: |
+          ART="${{ steps.art.outputs.path }}"
+          python src/gates/model_gate/model_gate.py \
+            --path "$ART" \
+            --expected-sha "${{ steps.sha.outputs.sha }}" \
+            --fail-closed --json | tee gate-g4-deploy.json
+          test ${PIPESTATUS[0]} -eq 0
+
+      - name: Cosign sign artifacts
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          ART="${{ steps.art.outputs.path }}"
+          bash scripts/ci/cosign_sign_artifacts.sh ./signed "$ART" gate-g2-deploy.json gate-g4-deploy.json
+
+      - name: Cosign verify (mandatory before prod)
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          REQUIRE_COSIGN: ${{ env.REQUIRE_COSIGN }}
+        run: |
+          ART="${{ steps.art.outputs.path }}"
+          bash scripts/ci/cosign_verify_artifacts.sh ./signed "$ART"
+
+      - name: WORM upload prod artifact
+        env:
+          MODEL_NAME: ${{ needs.setup.outputs.model_name }}
+          VERSION: ${{ needs.setup.outputs.version }}
+        run: bash scripts/ci/worm_upload_prod.sh "${{ steps.art.outputs.path }}"
+
+      - name: Smoke — inference health (G7)
+        run: |
+          docker run -d --rm -p 18080:8080 --name mlsec-smoke mlsec-inference:ci \
+            uvicorn src.serve.app:app --host 0.0.0.0 --port 8080
+          sleep 5
+          curl -fsS http://127.0.0.1:18080/health || (docker logs mlsec-smoke; exit 1)
+          docker stop mlsec-smoke
+
+      - name: Build deploy-summary + ingest
+        run: |
+          python scripts/ci/merge_verify_summary.py --workflow deploy --flow A \
+            --out deploy-summary.json gate-g2-deploy.json gate-g4-deploy.json || true
+          python scripts/ci/build_run_metadata.py --summary deploy-summary.json
+          bash scripts/ci/push_reports_to_gatekeeper.sh deploy-summary.json deploy
+        env:
+          GATEKEEPER_URL: ${{ vars.GATEKEEPER_URL }}
+          CI_INGEST_TOKEN: ${{ secrets.CI_INGEST_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deploy-gates
+          path: |
+            gate-g2-deploy.json
+            gate-g4-deploy.json
+            deploy-summary.json
+            deploy-sbom.json
+            signed/

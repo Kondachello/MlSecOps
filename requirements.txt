@@ -1,0 +1,20 @@
+# Корневые зависимости платформы (бэкенд/ядро/UI).
+# У КАЖДОГО ГЕЙТА — свой requirements.txt в его папке (изоляция образов).
+# Версии пиннятся при реализации (require-hashes/lock); ниже — ориентир.
+
+fastapi
+uvicorn[standard]
+pydantic>=2
+psycopg[binary]
+boto3
+redis
+mlflow
+pandas
+requests
+python-dotenv
+
+# UI
+streamlit
+
+# Тесты
+pytest

@@ -1,0 +1,24 @@
+# Сборка образов гейтов (из корня alfa_case_2):
+#   docker compose -f infra/docker-compose.gates.yml build
+# Прогон гейтов — job build-gates в .github/workflows/ci.yml (GitHub-hosted).
+
+services:
+  gate-data:
+    build: ../src/gates/data_gate
+    image: mlsec-gate-data
+
+  gate-code:
+    build: ../src/gates/code_gate
+    image: mlsec-gate-code
+
+  gate-dependency:
+    build: ../src/gates/dependency_gate
+    image: mlsec-gate-dependency
+
+  gate-model:
+    build: ../src/gates/model_gate
+    image: mlsec-gate-model
+
+  gate-registry:
+    build: ../src/gates/registry_gate
+    image: mlsec-gate-registry

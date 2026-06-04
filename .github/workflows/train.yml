@@ -1,0 +1,132 @@
+# train.yml — обучение модели В CI (канонический прод-артефакт). docs/12_CICD.md §train.
+# Триггер: кнопка RUN / repository_dispatch после успешного verify (поток A).
+# Порядок: preflight → G2(ci) → train → G4 → cosign → register (API TODO).
+name: train
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_name:      { description: "имя модели",        required: true, default: "credit_scoring" }
+      dataset_name:    { description: "датасет (name)",    required: true, default: "train_m1_clean" }
+      dataset_version: { description: "версия датасета",   required: true, default: "v1" }
+      git_commit:      { description: "git SHA кода",      required: true, default: "main" }
+  repository_dispatch:
+    types: [train]
+
+env:
+  USE_GATEKEEPER: ${{ vars.GATEKEEPER_URL != '' && 'true' || 'false' }}
+
+jobs:
+  setup:
+    runs-on: ubuntu-22.04
+    outputs:
+      model_name: ${{ steps.p.outputs.model_name }}
+      dataset_name: ${{ steps.p.outputs.dataset_name }}
+      dataset_version: ${{ steps.p.outputs.dataset_version }}
+      git_commit: ${{ steps.p.outputs.git_commit }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: p
+        env:
+          GITHUB_EVENT: ${{ toJson(github.event) }}
+        run: |
+          python - <<'PY'
+          import json, os
+          ev = json.loads(os.environ["GITHUB_EVENT"])
+          inp, cp = ev.get("inputs") or {}, ev.get("client_payload") or {}
+          def g(k, d=""):
+              v = inp.get(k) or cp.get(k) or d
+              return str(v) if v is not None else d
+          out = os.environ["GITHUB_OUTPUT"]
+          with open(out, "a", encoding="utf-8") as f:
+              f.write(f"model_name={g('model_name')}\n")
+              f.write(f"dataset_name={g('dataset_name')}\n")
+              f.write(f"dataset_version={g('dataset_version')}\n")
+              f.write(f"git_commit={g('git_commit')}\n")
+          PY
+
+  train:
+    needs: setup
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install --no-cache-dir -r requirements.txt scikit-learn skl2onnx onnx onnxruntime
+
+      - name: Preflight — dataset available
+        env:
+          DATASET_NAME: ${{ needs.setup.outputs.dataset_name }}
+          DATASET_VERSION: ${{ needs.setup.outputs.dataset_version }}
+          USE_GATEKEEPER: ${{ env.USE_GATEKEEPER }}
+          GATEKEEPER_URL: ${{ vars.GATEKEEPER_URL }}
+        run: bash scripts/ci/preflight_train.sh
+
+      - name: G2 Code Gate (ci) ПЕРВЫМ
+        run: |
+          python src/gates/code_gate/code_gate.py --path src --stage ci --json | tee gate-g2-train.json
+          test ${PIPESTATUS[0]} -eq 0
+
+      - name: Обучение в CI
+        run: |
+          python src/train/train.py \
+            --git-commit "${{ needs.setup.outputs.git_commit }}" \
+            --dataset-name "${{ needs.setup.outputs.dataset_name }}" \
+            --dataset-version "${{ needs.setup.outputs.dataset_version }}" \
+            --data-source-type verified_id
+
+      - name: G4 Model Gate на CI-артефакте
+        run: |
+          ART=$(cat artifacts/model_path.txt)
+          python src/gates/model_gate/model_gate.py --path "$ART" --json | tee gate-g4-train.json
+          test ${PIPESTATUS[0]} -eq 0
+
+      - name: Cosign sign CI artifact
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          ART=$(cat artifacts/model_path.txt)
+          bash scripts/ci/cosign_sign_artifacts.sh ./signed "$ART" gate-g4-train.json
+
+      - name: SBOM
+        run: bash scripts/ci/generate_sbom.sh train-sbom.json requirements.txt
+
+      - name: Register in Gatekeeper registry
+        env:
+          GATEKEEPER_URL: ${{ vars.GATEKEEPER_URL }}
+          CI_INGEST_TOKEN: ${{ secrets.CI_INGEST_TOKEN }}
+        run: |
+          ART=$(cat artifacts/model_path.txt)
+          RUN_ID=$(cat artifacts/run_id.txt 2>/dev/null || echo "")
+          python scripts/ci/register_train_artifact.py \
+            --artifact "$ART" \
+            --model-name "${{ needs.setup.outputs.model_name }}" \
+            --version "1.0.0" \
+            --dataset-name "${{ needs.setup.outputs.dataset_name }}" \
+            --dataset-version "${{ needs.setup.outputs.dataset_version }}" \
+            --git-sha "${{ needs.setup.outputs.git_commit }}" \
+            --run-id "$RUN_ID" \
+            --tier MED || echo "register skipped (no GATEKEEPER_URL)"
+
+      - name: Build train-summary + ingest (optional)
+
+        run: |
+          python scripts/ci/merge_verify_summary.py --workflow train --flow A \
+            --out train-summary.json gate-g2-train.json gate-g4-train.json || true
+          python scripts/ci/build_run_metadata.py --summary train-summary.json
+          bash scripts/ci/push_reports_to_gatekeeper.sh train-summary.json train
+        env:
+          GATEKEEPER_URL: ${{ vars.GATEKEEPER_URL }}
+          CI_INGEST_TOKEN: ${{ secrets.CI_INGEST_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: train-gates
+          path: |
+            artifacts/
+            gate-g2-train.json
+            gate-g4-train.json
+            train-summary.json
+            train-sbom.json
+            signed/

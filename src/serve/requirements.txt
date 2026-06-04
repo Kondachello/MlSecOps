@@ -1,0 +1,7 @@
+# G7 инференс (модель №1). Загрузка ONNX-артефакта.
+fastapi
+uvicorn[standard]
+pydantic>=2
+redis
+onnxruntime
+numpy

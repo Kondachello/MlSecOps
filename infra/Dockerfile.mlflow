@@ -1,0 +1,12 @@
+# MLflow Tracking + Registry (Postgres + MinIO). Собирается один раз — без pip при каждом up.
+FROM python:3.11-slim
+WORKDIR /app
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir \
+        "mlflow==2.16.2" \
+        "psycopg2-binary==2.9.9" \
+        "boto3==1.34.69"
+COPY infra/mlflow-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+EXPOSE 5000
+ENTRYPOINT ["/entrypoint.sh"]

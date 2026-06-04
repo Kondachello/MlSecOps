@@ -1,0 +1,236 @@
+# CI — регрессия на PR/push (фикстуры demo/). Боевой verify из UI → verify.yml.
+# GitHub-hosted runner (ubuntu-22.04).
+name: ci
+
+on:
+  push:
+    branches: [main, Rina]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: py_compile
+        run: |
+          python -m py_compile \
+            core/*.py \
+            src/api/main.py \
+            src/gates/data_gate/data_gate.py \
+            src/gates/code_gate/code_gate.py \
+            src/gates/dependency_gate/dependency_gate.py \
+            src/gates/model_gate/model_gate.py \
+            src/gates/registry_gate/registry_gate.py \
+            src/ingest_dataset/ingest_dataset.py \
+            src/run_data_checks/run_data_checks.py \
+            src/serve/app.py src/serve/attack_sim.py \
+            src/train/train.py src/monitor/monitor.py \
+            src/common/features.py src/common/audit.py src/common/controls.py \
+            ui/app.py infra/seed_admin.py data/make_datasets.py
+
+  data-gate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install --no-cache-dir pandas pyarrow
+      - run: python data/make_datasets.py
+      - name: G1 clean report
+        run: |
+          python src/gates/data_gate/data_gate.py --path data/train_m1_clean.csv --json | tee gate-g1-clean.json
+          test ${PIPESTATUS[0]} -eq 0
+      - name: upload G1 clean report
+        uses: actions/upload-artifact@v4
+        with: { name: gate-g1-clean, path: gate-g1-clean.json }
+      - name: poisoned is blocked
+        run: |
+          if python src/gates/data_gate/data_gate.py --path data/train_m1_poisoned.csv --json; then
+            echo "G1 не сработал на приманке (PII+balance)"; exit 1
+          else echo "ok — отравленный датасет заблокирован"; fi
+
+  code-gate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: install G2 scanners (SAST + SCA + semgrep)
+        run: |
+          pip install --no-cache-dir bandit pip-audit
+          bash scripts/ci/install_semgrep.sh
+      - name: install gitleaks (secrets)
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: clean src — secrets + SAST + SCA (no SKIP, no FAIL)
+        run: |
+          python src/gates/code_gate/code_gate.py --path src --stage ci --json > gate-g2-clean.json
+          cat gate-g2-clean.json
+          python scripts/ci/assert_gate_checks.py --require secrets sast cve_deps semgrep --no-fail gate-g2-clean.json
+      - name: insecure fixture — SCA/SAST must FAIL
+        run: |
+          if python src/gates/code_gate/code_gate.py --path demo/insecure --stage ci --json; then
+            echo "G2 не обнаружил уязвимости в demo/insecure"; exit 1
+          else echo "ok — небезопасный код заблокирован"; fi
+      - name: upload G2 report
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-g2-clean
+          path: gate-g2-clean.json
+
+  dependency-gate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: G3 clean report
+        run: |
+          python src/gates/dependency_gate/dependency_gate.py --path demo/requirements_clean.txt --json | tee gate-g3-clean.json
+          test ${PIPESTATUS[0]} -eq 0
+      - name: upload G3 clean report
+        uses: actions/upload-artifact@v4
+        with: { name: gate-g3-clean, path: gate-g3-clean.json }
+      - name: typosquat is blocked
+        run: |
+          if python src/gates/dependency_gate/dependency_gate.py --path demo/insecure/requirements_vuln.txt --json; then
+            echo "G3 не сработал на pytirch/tenserflew"; exit 1
+          else echo "ok — typosquat заблокирован"; fi
+
+  model-gate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: install model scanners
+        run: pip install --no-cache-dir modelscan picklescan
+      - name: generate demo model fixtures
+        run: python demo/insecure/make_model_fixtures.py
+      - name: G4 safe report
+        run: |
+          python src/gates/model_gate/model_gate.py --path demo/model_safe.safetensors --json | tee gate-g4-safe.json
+          test ${PIPESTATUS[0]} -eq 0
+      - name: upload G4 safe report
+        uses: actions/upload-artifact@v4
+        with: { name: gate-g4-safe, path: gate-g4-safe.json }
+      - name: unsafe pkl is blocked
+        run: |
+          if python src/gates/model_gate/model_gate.py --path demo/insecure/model_unsafe.pkl --json; then
+            echo "G4 не заблокировал .pkl"; exit 1
+          else echo "ok — .pkl заблокирован"; fi
+
+  registry-gate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: G5 complete card report
+        run: |
+          python src/gates/registry_gate/registry_gate.py --card demo/model_card_complete.json --json | tee gate-g5-complete.json
+          test ${PIPESTATUS[0]} -eq 0
+      - name: upload G5 complete report
+        uses: actions/upload-artifact@v4
+        with: { name: gate-g5-complete, path: gate-g5-complete.json }
+      - name: incomplete card is blocked
+        run: |
+          if python src/gates/registry_gate/registry_gate.py --card demo/insecure/model_card_incomplete.json --json; then
+            echo "G5 не заблокировал неполный паспорт"; exit 1
+          else echo "ok — неполный паспорт заблокирован"; fi
+
+  db-smoke:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install --no-cache-dir psycopg[binary]
+      - name: smoke_db (skip on GHA without Postgres)
+        env:
+          CI_SKIP_DB_SMOKE: "true"
+        run: python tests/smoke_db.py
+
+  build-gates:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: build gate images
+        run: docker compose -f infra/docker-compose.gates.yml build
+      - name: generate model fixtures
+        run: python demo/insecure/make_model_fixtures.py
+      - name: smoke dependency gate in container
+        run: |
+          docker run --rm --network none \
+            -v "$PWD/demo/requirements_clean.txt:/in/requirements.txt:ro" \
+            mlsec-gate-dependency --path /in/requirements.txt --json
+          if docker run --rm --network none \
+            -v "$PWD/demo/insecure/requirements_vuln.txt:/in/requirements.txt:ro" \
+            mlsec-gate-dependency --path /in/requirements.txt --json; then
+            echo "G3 container: bad req must fail"; exit 1
+          else echo "ok — G3 blocked in container"; fi
+      - name: smoke model gate in container
+        run: |
+          docker run --rm --network none \
+            -v "$PWD/demo/model_safe.safetensors:/in/model.safetensors:ro" \
+            mlsec-gate-model --path /in/model.safetensors --json
+          if docker run --rm --network none \
+            -v "$PWD/demo/insecure/model_unsafe.pkl:/in/model.pkl:ro" \
+            mlsec-gate-model --path /in/model.pkl --json; then
+            echo "G4 container: pkl must fail"; exit 1
+          else echo "ok — G4 blocked in container"; fi
+      - name: smoke code gate in container (SAST+SCA+secrets, needs network for pip-audit)
+        run: |
+          docker run --rm \
+            -v "$PWD:/work:ro" -w /work \
+            mlsec-gate-code --path src --stage ci --json > gate-g2-docker.json
+          cat gate-g2-docker.json
+          python scripts/ci/assert_gate_checks.py --require secrets sast cve_deps --no-fail gate-g2-docker.json
+      - name: upload G2 docker report
+        uses: actions/upload-artifact@v4
+        with: { name: gate-g2-docker, path: gate-g2-docker.json }
+
+  sbom:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: bash scripts/ci/generate_sbom.sh ci-sbom.json requirements.txt
+      - uses: actions/upload-artifact@v4
+        with: { name: ci-sbom, path: ci-sbom.json }
+
+  gate-summary:
+    needs: [data-gate, code-gate, dependency-gate, model-gate, registry-gate, build-gates, sbom]
+    if: always()
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: gate-reports }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Build ci-gate-summary.json
+        run: |
+          REPORTS=$(find gate-reports -name 'gate-*.json' | tr '\n' ' ')
+          python scripts/ci/merge_verify_summary.py --workflow ci --flow A \
+            --out ci-gate-summary.json $REPORTS || true
+          python scripts/ci/build_run_metadata.py --summary ci-gate-summary.json
+          cat ci-gate-summary.json
+      - uses: actions/upload-artifact@v4
+        with: { name: ci-gate-summary, path: ci-gate-summary.json }
+      - name: Ingest summary to Gatekeeper (optional)
+        env:
+          GATEKEEPER_URL: ${{ vars.GATEKEEPER_URL }}
+          CI_INGEST_TOKEN: ${{ secrets.CI_INGEST_TOKEN }}
+        run: bash scripts/ci/push_reports_to_gatekeeper.sh ci-gate-summary.json ci

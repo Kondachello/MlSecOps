@@ -1,0 +1,16 @@
+{
+  "_comment": "DEMO-ФИКСТУРА: полный паспорт с lineage → G5 PASS",
+  "name": "fraud-detector-demo",
+  "version": "1.0.0",
+  "owner": "ds-team@example.com",
+  "tier": "HIGH",
+  "source": "internal",
+  "purpose": "Детектирование мошенничества по транзакциям",
+  "data_source": "corp_storage",
+  "trained_in_ci": true,
+  "dataset_version": "train_m1_v1.0",
+  "git_sha": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+  "sha256": "a3b4c5d6e7f8a3b4c5d6e7f8a3b4c5d6e7f8a3b4c5d6e7f8a3b4c5d6e7f8a3b4",
+  "run_id": "mlflow-run-abc123",
+  "dataset_sha256": "b4c5d6e7f8a9b4c5d6e7f8a9b4c5d6e7f8a9b4c5d6e7f8a9b4c5d6e7f8a9b4c5"
+}

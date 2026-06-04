@@ -1,0 +1,261 @@
+# verify.yml — сквозная верификация по кнопке UI (через Gatekeeper → repository_dispatch).
+# Порядок: preflight → G1 (или skip fast-path) → G2+G3+G5 параллельно (поток A) / G3+G4+G5 (поток B)
+# → cosign sign → summary. Канон: docs/05_CANONICAL_FLOW.md §5.3–5.4.
+name: verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      flow:
+        description: "A=своя модель, B=внешние веса"
+        required: false
+        default: "A"
+        type: choice
+        options: [A, B]
+      model_name:
+        description: "имя модели (MLflow)"
+        required: false
+        default: "credit_scoring"
+      run_id:
+        description: "MLflow run_id"
+        required: false
+        default: ""
+      git_sha:
+        description: "git SHA кода"
+        required: false
+        default: ""
+      dataset_path:
+        description: "путь к CSV датасета"
+        required: false
+        default: "data/train_m1_clean.csv"
+      dataset_sha256:
+        description: "SHA-256 датасета (fast-path)"
+        required: false
+        default: ""
+      dataset_already_verified:
+        description: "датасет уже verified (skip G1)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+      model_card_path:
+        description: "JSON паспорт модели (G5)"
+        required: false
+        default: "demo/model_card_complete.json"
+      model_artifact_path:
+        description: "путь к весам (поток B)"
+        required: false
+        default: ""
+      requirements_path:
+        description: "requirements для G3"
+        required: false
+        default: "demo/requirements_clean.txt"
+      code_path:
+        description: "код для G2 (поток A)"
+        required: false
+        default: "src"
+  repository_dispatch:
+    types: [verify, scan]
+
+jobs:
+  setup:
+    runs-on: ubuntu-22.04
+    outputs:
+      flow: ${{ steps.in.outputs.flow }}
+      dataset_path: ${{ steps.in.outputs.dataset_path }}
+      skip_g1: ${{ steps.in.outputs.skip_g1 }}
+      model_card_path: ${{ steps.in.outputs.model_card_path }}
+      model_artifact_path: ${{ steps.in.outputs.model_artifact_path }}
+      requirements_path: ${{ steps.in.outputs.requirements_path }}
+      code_path: ${{ steps.in.outputs.code_path }}
+      git_sha: ${{ steps.in.outputs.git_sha }}
+      model_name: ${{ steps.in.outputs.model_name }}
+      run_id: ${{ steps.in.outputs.run_id }}
+      dataset_name: ${{ steps.in.outputs.dataset_name }}
+      dataset_version: ${{ steps.in.outputs.dataset_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve inputs (dispatch + UI payload)
+        id: in
+        env:
+          GITHUB_EVENT: ${{ toJson(github.event) }}
+        run: bash scripts/ci/resolve_verify_inputs.sh
+      - name: Preflight dataset registry
+        env:
+          SKIP_G1: ${{ steps.in.outputs.skip_g1 }}
+          USE_GATEKEEPER: ${{ vars.GATEKEEPER_URL != '' && 'true' || 'false' }}
+          GATEKEEPER_URL: ${{ vars.GATEKEEPER_URL }}
+          DATASET_NAME: ${{ steps.in.outputs.dataset_name }}
+          DATASET_VERSION: ${{ steps.in.outputs.dataset_version }}
+        run: bash scripts/ci/preflight_dataset.sh
+
+  g1-data:
+    needs: setup
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install --no-cache-dir pandas pyarrow
+      - run: python data/make_datasets.py
+      - name: G1 Data Gate or fast-path skip
+        run: |
+          if [ "${{ needs.setup.outputs.skip_g1 }}" = "true" ]; then
+            python scripts/ci/gate_skip_report.py --gate G1 \
+              --asset "${{ needs.setup.outputs.dataset_path }}" \
+              --reason "dataset already verified (fast-path SHA)" \
+              -o gate-g1.json
+          else
+            python src/gates/data_gate/data_gate.py \
+              --path "${{ needs.setup.outputs.dataset_path }}" --json | tee gate-g1.json
+            test ${PIPESTATUS[0]} -eq 0
+          fi
+      - uses: actions/upload-artifact@v4
+        with: { name: gate-g1, path: gate-g1.json }
+
+  g2-code:
+    needs: [setup, g1-data]
+    if: needs.setup.outputs.flow == 'A'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: install G2 scanners
+        run: |
+          pip install --no-cache-dir bandit pip-audit
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
+            | tar -xz -C /usr/local/bin gitleaks
+      - name: install semgrep
+        run: bash scripts/ci/install_semgrep.sh
+      - name: G2 Code Gate (ci)
+        run: |
+          python src/gates/code_gate/code_gate.py \
+            --path "${{ needs.setup.outputs.code_path }}" --stage ci --json | tee gate-g2.json
+          test ${PIPESTATUS[0]} -eq 0
+          python scripts/ci/assert_gate_checks.py --require secrets sast cve_deps semgrep --no-fail gate-g2.json
+      - uses: actions/upload-artifact@v4
+        with: { name: gate-g2, path: gate-g2.json }
+
+  g3-dependency:
+    needs: [setup, g1-data]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: G3 Dependency Gate
+        run: |
+          python src/gates/dependency_gate/dependency_gate.py \
+            --path "${{ needs.setup.outputs.requirements_path }}" --json | tee gate-g3.json
+          test ${PIPESTATUS[0]} -eq 0
+      - uses: actions/upload-artifact@v4
+        with: { name: gate-g3, path: gate-g3.json }
+
+  g5-registry:
+    needs: [setup, g1-data]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: G5 Registry Gate
+        run: |
+          python src/gates/registry_gate/registry_gate.py \
+            --card "${{ needs.setup.outputs.model_card_path }}" --json | tee gate-g5.json
+          test ${PIPESTATUS[0]} -eq 0
+      - uses: actions/upload-artifact@v4
+        with: { name: gate-g5, path: gate-g5.json }
+
+  g4-external:
+    needs: [setup, g1-data]
+    if: needs.setup.outputs.flow == 'B'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install --no-cache-dir modelscan picklescan
+      - run: python demo/insecure/make_model_fixtures.py
+      - name: Resolve external artifact path
+        id: art
+        run: |
+          P="${{ needs.setup.outputs.model_artifact_path }}"
+          if [ -z "$P" ] || [ ! -f "$P" ]; then
+            P="demo/model_safe.safetensors"
+            echo "fallback artifact: $P"
+          fi
+          echo "path=$P" >> "$GITHUB_OUTPUT"
+      - name: G4 Model Gate (external / frozen weights)
+        run: |
+          python src/gates/model_gate/model_gate.py \
+            --path "${{ steps.art.outputs.path }}" --json | tee gate-g4.json
+          test ${PIPESTATUS[0]} -eq 0
+      - uses: actions/upload-artifact@v4
+        with: { name: gate-g4, path: gate-g4.json }
+
+  sign:
+    needs: [setup, g1-data, g3-dependency, g5-registry, g2-code, g4-external]
+    if: |
+      always() &&
+      needs.g1-data.result == 'success' &&
+      needs.g3-dependency.result == 'success' &&
+      needs.g5-registry.result == 'success' &&
+      (needs.g2-code.result == 'success' || needs.g2-code.result == 'skipped') &&
+      (needs.g4-external.result == 'success' || needs.g4-external.result == 'skipped')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: gate-reports }
+      - name: Collect reports for signing
+        id: collect
+        run: |
+          mkdir -p to-sign
+          find gate-reports -name 'gate-*.json' -exec cp {} to-sign/ \;
+          ls -la to-sign/
+          echo "dataset=${{ needs.setup.outputs.dataset_path }}" >> "$GITHUB_OUTPUT"
+      - name: Cosign sign (dataset manifest + gate reports)
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          bash scripts/ci/cosign_sign_artifacts.sh ./signed \
+            "${{ needs.setup.outputs.dataset_path }}" \
+            to-sign/gate-g1.json to-sign/gate-g3.json to-sign/gate-g5.json \
+            $(find to-sign -name 'gate-g2.json' -o -name 'gate-g4.json' 2>/dev/null | tr '\n' ' ')
+      - uses: actions/upload-artifact@v4
+        with: { name: verify-signatures, path: signed }
+
+  summary:
+    needs: [setup, g1-data, g3-dependency, g5-registry, g2-code, g4-external, sign]
+    if: always()
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: SBOM
+        run: bash scripts/ci/generate_sbom.sh verify-sbom.json requirements.txt
+      - uses: actions/download-artifact@v4
+        with: { path: gate-reports }
+      - name: Build verify-summary.json
+        run: |
+          REPORTS=$(find gate-reports -name 'gate-*.json' | tr '\n' ' ')
+          python scripts/ci/merge_verify_summary.py --workflow verify \
+            --flow "${{ needs.setup.outputs.flow }}" \
+            --out verify-summary.json $REPORTS || true
+          python scripts/ci/build_run_metadata.py --summary verify-summary.json
+          cat verify-summary.json
+      - uses: actions/upload-artifact@v4
+        with: { name: verify-summary, path: verify-summary.json }
+      - name: Ingest summary to Gatekeeper (optional)
+        env:
+          GATEKEEPER_URL: ${{ vars.GATEKEEPER_URL }}
+          CI_INGEST_TOKEN: ${{ secrets.CI_INGEST_TOKEN }}
+        run: bash scripts/ci/push_reports_to_gatekeeper.sh verify-summary.json verify
+      - name: Fail job if any gate failed
+        run: |
+          python scripts/ci/merge_verify_summary.py --workflow verify \
+            --flow "${{ needs.setup.outputs.flow }}" \
+            --out verify-summary.json $(find gate-reports -name 'gate-*.json')

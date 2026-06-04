@@ -1,0 +1,179 @@
+# Полный стенд одной командой:
+#   docker compose -f infra/docker-compose.yml up --build
+#
+# UI → Gatekeeper (backend) → Postgres / Redis / MinIO / MLflow
+# GitHub Actions → GATEKEEPER_URL (ingest + preflight + register)
+name: mlsecops
+
+x-backend-env: &backend-env
+  DB_BACKEND: postgres
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: ${POSTGRES_DB:-mlsec}
+  POSTGRES_USER: ${POSTGRES_USER:-mlsec_app}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+  # MLflow только внутри сети; клиенты (SDK, ноутбук) — через прокси бэкенда /mlflow
+  MLFLOW_UPSTREAM_URL: http://mlflow:5000
+  MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://localhost:8000/mlflow}
+  GATEKEEPER_PUBLIC_URL: ${GATEKEEPER_PUBLIC_URL:-http://localhost:8000}
+  MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-change_me}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-change_me}
+  MLFLOW_S3_ENDPOINT_URL: ${MLFLOW_S3_ENDPOINT_URL:-http://minio:9000}
+  GITHUB_REPO: ${GITHUB_REPO:-}
+  GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  GITHUB_REF: ${GITHUB_REF:-main}
+  CI_INGEST_TOKEN: ${CI_INGEST_TOKEN:-}
+  APP_DEBUG: ${APP_DEBUG:-false}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mlsec}
+      POSTGRES_USER: ${POSTGRES_USER:-mlsec_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./init-mlflow-db.sql:/docker-entrypoint-initdb.d/02-mlflow-db.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mlsec_app} -d ${POSTGRES_DB:-mlsec}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-change_me}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-change_me}
+    ports: ["9000:9000", "9001:9001"]
+    volumes:
+      - miniodata:/data
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        sleep 3
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+        mc mb local/mlflow --ignore-existing
+        mc mb local/datasets --ignore-existing
+        mc mb local/models --ignore-existing
+        mc mb local/quarantine --ignore-existing
+        echo "minio buckets ready"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-change_me}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-change_me}
+
+  mlflow:
+    # Готовый образ — без pip при каждом up (на Windows build часто даёт EOF)
+    image: ghcr.io/mlflow/mlflow:v2.14.1
+    expose: ["5000"]
+    volumes:
+      - mlflowdata:/mlflow-artifacts
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -eu
+        pip install -q --no-cache-dir psycopg2-binary
+        ART="$${MLFLOW_ARTIFACT_ROOT:-file:///mlflow-artifacts}"
+        echo "mlflow: postgres://$${POSTGRES_USER}@postgres:5432/$${MLFLOW_POSTGRES_DB} artifacts=$${ART}"
+        exec mlflow server --host 0.0.0.0 --port 5000 \
+          --backend-store-uri "postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@postgres:5432/$${MLFLOW_POSTGRES_DB}" \
+          --default-artifact-root "$${ART}"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mlsec_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-mlsec}
+      MLFLOW_POSTGRES_DB: ${MLFLOW_POSTGRES_DB:-mlflow}
+      # file:// стабильнее на локальном стенде; для S3: MLFLOW_ARTIFACT_ROOT=s3://mlflow/
+      MLFLOW_ARTIFACT_ROOT: ${MLFLOW_ARTIFACT_ROOT:-file:///mlflow-artifacts}
+      MLFLOW_S3_ENDPOINT_URL: ${MLFLOW_S3_ENDPOINT_URL:-http://minio:9000}
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-change_me}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-change_me}
+      AWS_DEFAULT_REGION: us-east-1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    restart: unless-stopped
+
+  backend:
+    build: { context: .., dockerfile: infra/Dockerfile.backend }
+    command:
+      - sh
+      - -c
+      - |
+        python infra/seed_admin.py 2>/dev/null || true
+        python scripts/seed_ci_registry.py 2>/dev/null || true
+        exec uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+    environment: *backend-env
+    env_file: [../.env]
+    ports: ["8000:8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      mlflow:
+        condition: service_healthy
+
+  ui:
+    build: { context: .., dockerfile: infra/Dockerfile.ui }
+    command: streamlit run ui/app.py --server.port 8501 --server.address 0.0.0.0
+    environment:
+      GATEKEEPER_URL: http://backend:8000
+      APP_DEBUG: ${APP_DEBUG:-false}
+      UI_USE_MOCKS: ${UI_USE_MOCKS:-false}
+    ports: ["${UI_HOST_PORT:-8501}:8501"]
+    depends_on:
+      backend:
+        condition: service_started
+
+  inference:
+    build: { context: .., dockerfile: infra/Dockerfile.backend }
+    command: uvicorn src.serve.app:app --host 0.0.0.0 --port 8080
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    ports: ["8080:8080"]
+    depends_on:
+      redis:
+        condition: service_started
+
+  ci-runner:
+    profiles: [ci]
+    image: myoung34/github-runner:latest
+    env_file: [../.env]
+    environment:
+      RUNNER_SCOPE: repo
+      LABELS: self-hosted
+      GATEKEEPER_URL: http://backend:8000
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on: [backend]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  miniodata:
+  mlflowdata:
