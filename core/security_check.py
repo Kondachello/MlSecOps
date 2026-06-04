@@ -22,6 +22,25 @@ from typing import Optional
 
 from core import gates_pipeline
 
+# Ключевые слова критичных доменов → Tier=HIGH (ПЛЕЙСХОЛДЕР классификации критичности).
+# В реальной системе Tier берётся из паспорта модели / реестра use-case'ов.
+_HIGH_TIER_HINTS = ("credit", "fraud", "scoring", "loan", "kyc", "antifraud", "risk")
+
+
+def compute_tier(run_meta: Optional[dict] = None) -> str:
+    """Оценить Tier артефакта (LOW|MED|HIGH) — ПЛЕЙСХОЛДЕР по имени/тегам.
+
+    HIGH → требует ручного Approve (HITL) перед продом. Точка расширения: реальный
+    Tier — из паспорта модели (бизнес-критичность), а не из эвристики по имени.
+    """
+    meta = run_meta or {}
+    hay = " ".join(str(meta.get(k, "")) for k in ("run_name", "experiment", "owner")).lower()
+    params = " ".join(str(v) for v in (meta.get("params", {}) or {}).values()).lower()
+    blob = f"{hay} {params}"
+    if any(h in blob for h in _HIGH_TIER_HINTS):
+        return "HIGH"
+    return "MED"
+
 
 def run_artifact_check(run_id: str, run_meta: Optional[dict] = None,
                        only: Optional[list[str]] = None) -> dict:
@@ -34,6 +53,7 @@ def run_artifact_check(run_id: str, run_meta: Optional[dict] = None,
     result = {
         "passed": pipe["passed"],
         "run_id": run_id,
+        "tier": compute_tier(meta),
         "gates": pipe["gates"],
         "placeholder": True,
         "debug": {

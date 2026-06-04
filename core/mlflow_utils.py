@@ -94,26 +94,93 @@ def list_models() -> list[dict]:
 
 
 def list_runs(model: str) -> list[dict]:
-    """Список ранов модели с ИБ-тегами и хэшем датасета (run.inputs.dataset_inputs). TODO."""
-    raise NotImplementedError("TODO")
+    """Раны конкретной модели/эксперимента (по имени). Пустой список, если MLflow недоступен.
+
+    `model` трактуется как имя эксперимента (в нашей модели эксперимент = «аккаунт/проект»
+    разработчика). Возвращает плоские dict'ы, как list_recent_runs.
+    """
+    try:
+        c = _client()
+        exp = c.get_experiment_by_name(model)
+        if exp is None:
+            return []
+        by_id = {exp.experiment_id: exp.name}
+        runs = c.search_runs(experiment_ids=[exp.experiment_id],
+                             order_by=["start_time DESC"])
+    except Exception:  # noqa: BLE001
+        return []
+    return [_run_to_dict(r, by_id) for r in runs]
 
 
 def get_run_metadata(run_id: str) -> dict:
-    """Метаданные рана: security.* теги, dataset hash, git_sha, метрики. TODO."""
-    raise NotImplementedError("TODO")
+    """Метаданные рана: security.* теги, dataset hash, git_sha, метрики, lineage входов.
+
+    Расширяет get_run() тегами безопасности и информацией о датасет-входах рана.
+    {} если ран/MLflow недоступен.
+    """
+    base = get_run(run_id) or {}
+    if not base:
+        return {}
+    try:
+        c = _client()
+        r = c.get_run(run_id)
+        tags = r.data.tags or {}
+        base["security_tags"] = {k: v for k, v in tags.items() if k.startswith("security.")}
+        base["git_sha"] = tags.get("mlflow.source.git.commit") or tags.get("security.git_sha")
+        inputs = getattr(r, "inputs", None)
+        ds = []
+        for di in (getattr(inputs, "dataset_inputs", None) or []):
+            d = getattr(di, "dataset", None)
+            if d is not None:
+                ds.append({"name": getattr(d, "name", None), "digest": getattr(d, "digest", None)})
+        base["dataset_inputs"] = ds
+        base["dataset_sha256"] = ds[0]["digest"] if ds else tags.get("security.dataset_sha256")
+    except Exception:  # noqa: BLE001
+        pass
+    return base
 
 
 def download_artifacts(run_id: str, path: str, dst: str) -> str:
-    """Скачать артефакт рана в dst (для G2/G4 на верификации внешних весов). TODO."""
-    raise NotImplementedError("TODO")
+    """Скачать артефакт рана в dst (для G2/G4 на верификации внешних весов).
+
+    Тонкая обёртка над MlflowClient.download_artifacts. Бросает RuntimeError, если MLflow недоступен.
+    """
+    try:
+        c = _client()
+        return c.download_artifacts(run_id, path, dst)
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"download_artifacts failed (run={run_id}, path={path}): {e}") from e
 
 
 def register_model_version(name: str, source_uri: str, *, tags: Optional[dict] = None) -> str:
-    """Зарегистрировать версию в MLflow Model Registry; вернуть mlflow_version. TODO."""
-    raise NotImplementedError("TODO")
+    """Зарегистрировать версию в MLflow Model Registry; вернуть mlflow_version.
+
+    Создаёт registered model при отсутствии (идемпотентно), затем create_model_version.
+    Бросает RuntimeError, если MLflow недоступен.
+    """
+    try:
+        c = _client()
+        try:
+            c.create_registered_model(name)
+        except Exception:  # noqa: BLE001  — модель уже существует
+            pass
+        run_id = None
+        if source_uri.startswith("runs:/"):
+            run_id = source_uri.split("/", 2)[1] if len(source_uri.split("/")) > 1 else None
+        mv = c.create_model_version(name=name, source=source_uri, run_id=run_id, tags=tags or {})
+        return str(mv.version)
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"register_model_version failed (name={name}): {e}") from e
 
 
 def set_alias(name: str, version: str, alias: str) -> None:
-    """Сменить alias (candidate/staging/production/previous). Делает бэкенд/деплой, не человек. TODO."""
+    """Сменить alias (candidate/staging/production/previous). Делает бэкенд/деплой, не человек.
+
+    Тонкая обёртка над MlflowClient.set_registered_model_alias. RuntimeError при недоступности.
+    """
     assert alias in {"candidate", "staging", "production", "previous"}, alias
-    raise NotImplementedError("TODO")
+    try:
+        c = _client()
+        c.set_registered_model_alias(name, alias, version)
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"set_alias failed (name={name}, alias={alias}): {e}") from e

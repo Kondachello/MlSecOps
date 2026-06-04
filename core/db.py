@@ -203,7 +203,12 @@ CREATE TABLE IF NOT EXISTS artifact_acl (
     session_name  TEXT,
     check_status  TEXT NOT NULL DEFAULT 'none'
                   CHECK (check_status IN ('none','pending','passed','failed')),
-    check_detail  TEXT,                   -- JSON: результат security check (плейсхолдер)
+    check_detail  TEXT,                   -- JSON: результат security check (цепочка гейтов)
+    tier          TEXT,                   -- LOW|MED|HIGH (проставляется на security check; HIGH → HITL)
+    stage         TEXT NOT NULL DEFAULT 'none'
+                  CHECK (stage IN ('none','pending_approve','approved','prod','previous','retired')),
+    approved_by   TEXT,                   -- кто подтвердил (HITL, для Tier=HIGH)
+    deployed_by   TEXT,                   -- кто инициировал выкатку/перевёл в прод
     share_status  TEXT NOT NULL DEFAULT 'private'
                   CHECK (share_status IN ('private','shared')),
     share_level   INTEGER,                -- клиренс-уровень видимости (NULL пока приватный)
@@ -214,6 +219,15 @@ CREATE TABLE IF NOT EXISTS artifact_acl (
 );
 """
 
+# Колонки artifact_acl, добавленные после первого релиза (для миграции существующих sqlite-БД).
+# Postgres-схему (infra/init.sql) держим в синхроне вручную.
+_ACL_MIGRATIONS = [
+    ("tier", "TEXT"),
+    ("stage", "TEXT NOT NULL DEFAULT 'none'"),
+    ("approved_by", "TEXT"),
+    ("deployed_by", "TEXT"),
+]
+
 
 def init_db() -> None:
     """Создать схему для SQLite-дев (идемпотентно). В Postgres схему ставит init.sql."""
@@ -222,6 +236,12 @@ def init_db() -> None:
     conn = get_conn()
     try:
         conn.executescript(_SQLITE_SCHEMA)
+        # Лёгкая миграция: для уже существующих БД добавляем недостающие колонки artifact_acl.
+        cur = conn.execute("PRAGMA table_info(artifact_acl)")
+        have = {row[1] for row in cur.fetchall()}
+        for col, decl in _ACL_MIGRATIONS:
+            if col not in have:
+                conn.execute(f"ALTER TABLE artifact_acl ADD COLUMN {col} {decl}")
         conn.commit()
     finally:
         conn.close()
@@ -306,44 +326,138 @@ def verify_chain() -> dict:
 # --- реестр (datasets / models / model_versions) -----------------------------
 def register_dataset(name: str, version: str, sha256: str, source_type: str,
                      status: str, bucket: str, owner: str) -> int:
-    """INSERT в datasets. TODO (шаг с онбордингом датасетов)."""
-    raise NotImplementedError("TODO")
+    """INSERT в datasets (онбординг датасета). Идемпотентно по (name, version)."""
+    assert source_type in {"local", "internet", "corp_storage", "verified_id"}, source_type
+    assert status in {"registered", "available", "quarantine", "prod_locked"}, status
+    with _tx(commit=True) as cur:
+        cur.execute(
+            _sql("""INSERT INTO datasets (name, version, sha256, source_type, status, bucket, owner)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (name, version) DO UPDATE SET
+                        sha256 = excluded.sha256, status = excluded.status"""),
+            (name, version, sha256, source_type, status, bucket, owner))
+        cur.execute(_sql("SELECT id FROM datasets WHERE name = ? AND version = ?"),
+                    (name, version))
+        return int(cur.fetchone()[0])
 
 
 def register_model(name: str, version: str, *, tier: str, status: str, source: str,
                    owner: str, card: dict, sha256: Optional[str] = None) -> int:
-    """Зарегистрировать модель И в Postgres, И (через mlflow_utils) в MLflow Registry.
+    """Зарегистрировать модель в реестре (Postgres/sqlite). Идемпотентно по (name, version).
 
-    Перед регистрацией прогоняется G5 (registry_gate) — блок при FAIL.
-    TODO (шаг реестра).
+    Прогон G5 (registry_gate) и регистрация в MLflow Registry — на стороне оркестратора
+    (вызывающего), здесь — только запись в реестр БД.
     """
-    raise NotImplementedError("TODO")
+    assert tier in {"LOW", "MED", "HIGH"}, tier
+    assert source in {"ci_trained", "external"}, source
+    with _tx(commit=True) as cur:
+        cur.execute(
+            _sql("""INSERT INTO models (name, version, tier, status, source, sha256, owner, card)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (name, version) DO UPDATE SET
+                        tier = excluded.tier, status = excluded.status, sha256 = excluded.sha256,
+                        card = excluded.card"""),
+            (name, version, tier, status, source, sha256, owner, _json_param(card)))
+        cur.execute(_sql("SELECT id FROM models WHERE name = ? AND version = ?"),
+                    (name, version))
+        return int(cur.fetchone()[0])
 
 
 def add_model_version(model_name: str, version: str, *, dataset_name: Optional[str],
                       dataset_version: Optional[str], dataset_sha256: Optional[str],
                       git_sha: Optional[str], run_id: Optional[str],
                       trained_in_ci: bool, sha256: Optional[str], status: str) -> int:
-    """INSERT в model_versions (lineage). trained_in_ci проставляет CI, не клиент. TODO."""
-    raise NotImplementedError("TODO")
+    """INSERT в model_versions (lineage). trained_in_ci проставляет CI, не клиент."""
+    with _tx(commit=True) as cur:
+        cur.execute(
+            _sql("""INSERT INTO model_versions
+                    (model_name, version, dataset_name, dataset_version, dataset_sha256,
+                     git_sha, run_id, trained_in_ci, sha256, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (model_name, version) DO UPDATE SET
+                        dataset_name = excluded.dataset_name, dataset_version = excluded.dataset_version,
+                        dataset_sha256 = excluded.dataset_sha256, git_sha = excluded.git_sha,
+                        run_id = excluded.run_id, sha256 = excluded.sha256, status = excluded.status"""),
+            (model_name, version, dataset_name, dataset_version, dataset_sha256, git_sha,
+             run_id, 1 if trained_in_ci else 0, sha256, status))
+        cur.execute(_sql("SELECT id FROM model_versions WHERE model_name = ? AND version = ?"),
+                    (model_name, version))
+        return int(cur.fetchone()[0])
 
 
 def set_status(asset_type: str, name: str, version: str, status: str) -> None:
-    """Сменить статус актива (datasets/models). TODO + log_event вызывающим."""
-    raise NotImplementedError("TODO")
+    """Сменить статус актива в реестре. log_event пишет вызывающий (оркестратор/API)."""
+    table = {"dataset": "datasets", "model": "models"}.get(asset_type)
+    if table is None:
+        raise ValueError(f"unknown asset_type {asset_type!r}")
+    with _tx(commit=True) as cur:
+        cur.execute(
+            _sql(f"UPDATE {table} SET status = ? WHERE name = ? AND version = ?"),
+            (status, name, version))
 
 
-# --- находки (общая сущность сработок) ---------------------------------------
+def list_models() -> list[dict]:
+    """Все модели реестра БД с их версией/Tier/статусом (для UI «Реестр», БД-ветка)."""
+    with _tx() as cur:
+        cur.execute("SELECT name, version, tier, status, source, owner, approved_by, created_at "
+                    "FROM models ORDER BY name, version")
+        return [{"name": r[0], "version": r[1], "tier": r[2], "status": r[3],
+                 "source": r[4], "owner": r[5], "approved_by": r[6], "created_at": r[7]}
+                for r in cur.fetchall()]
+
+
+# --- находки / инциденты (авто из упавших гейтов) ----------------------------
 def add_finding(gate: str, asset_type: str, asset: str, rule: str, severity: str,
                 evidence: dict, *, run_no: int = 1, status: str = "open") -> int:
-    """INSERT в findings. severity ∈ {critical,high,medium,low}. TODO."""
+    """INSERT в findings (инцидент от гейта). severity ∈ {critical,high,medium,low}."""
     assert severity in {"critical", "high", "medium", "low"}, severity
-    raise NotImplementedError("TODO")
+    assert asset_type in {"dataset", "code", "model", "dependency", "runtime"}, asset_type
+    assert status in {"open", "false_positive", "fixed"}, status
+    with _tx(commit=True) as cur:
+        cur.execute(
+            _sql("""INSERT INTO findings
+                    (gate, asset_type, asset, rule, severity, evidence, status, run_no)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)"""),
+            (gate, asset_type, asset, rule, severity, _json_param(evidence), status, run_no))
+        cur.execute("SELECT last_insert_rowid()" if not _is_pg() else "SELECT lastval()")
+        return int(cur.fetchone()[0])
+
+
+def list_findings(*, status: Optional[str] = None, asset: Optional[str] = None,
+                  limit: int = 200) -> list[dict]:
+    """Инциденты (находки гейтов), новые сверху. Опц. фильтры по статусу/активу."""
+    where, params = [], []
+    if status:
+        where.append("status = ?")
+        params.append(status)
+    if asset:
+        where.append("asset = ?")
+        params.append(asset)
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    with _tx() as cur:
+        cur.execute(
+            _sql("SELECT id, ts, gate, asset_type, asset, rule, severity, evidence, "
+                 "status, marked_by, run_no FROM findings" + clause +
+                 " ORDER BY id DESC LIMIT " + str(int(limit))),
+            tuple(params))
+        rows = cur.fetchall()
+    return [{"id": int(r[0]), "ts": r[1], "gate": r[2], "asset_type": r[3], "asset": r[4],
+             "rule": r[5], "severity": r[6], "evidence": _json_load(r[7]),
+             "status": r[8], "marked_by": r[9], "run_no": int(r[10] or 1)} for r in rows]
+
+
+def clear_findings_for_asset(asset: str) -> None:
+    """Удалить открытые инциденты актива перед повторным security check (чтобы не плодить дубли)."""
+    with _tx(commit=True) as cur:
+        cur.execute(_sql("DELETE FROM findings WHERE asset = ? AND status = 'open'"), (asset,))
 
 
 def mark_false_positive(finding_id: int, marked_by: str, reason: str) -> None:
-    """Отметить находку как false_positive (только MLSecOps). TODO + log_event."""
-    raise NotImplementedError("TODO")
+    """Отметить находку как false_positive (только MLSecOps). log_event пишет вызывающий."""
+    with _tx(commit=True) as cur:
+        cur.execute(
+            _sql("UPDATE findings SET status = 'false_positive', marked_by = ? WHERE id = ?"),
+            (marked_by, finding_id))
 
 
 # --- RBAC --------------------------------------------------------------------
@@ -511,12 +625,14 @@ def _acl_row_to_dict(r) -> dict:
     return {
         "run_id": r[0], "experiment_id": r[1], "owner": r[2], "session_name": r[3],
         "check_status": r[4], "check_detail": _json_load(r[5]),
-        "share_status": r[6], "share_level": r[7],
-        "share_roles": _json_load(r[8]), "shared_by": r[9],
+        "tier": r[6], "stage": r[7] or "none", "approved_by": r[8], "deployed_by": r[9],
+        "share_status": r[10], "share_level": r[11],
+        "share_roles": _json_load(r[12]), "shared_by": r[13],
     }
 
 
 _ACL_COLS = ("run_id, experiment_id, owner, session_name, check_status, check_detail, "
+             "tier, stage, approved_by, deployed_by, "
              "share_status, share_level, share_roles, shared_by")
 
 
@@ -558,6 +674,59 @@ def set_check_status(run_id: str, status: str, detail: Optional[dict] = None) ->
             _sql("UPDATE artifact_acl SET check_status = ?, check_detail = ?, "
                  "updated_at = CURRENT_TIMESTAMP WHERE run_id = ?"),
             (status, _json_param(detail), run_id))
+
+
+def set_artifact_tier(run_id: str, tier: Optional[str]) -> None:
+    """Проставить Tier артефакта (LOW|MED|HIGH); считается на security check."""
+    if tier is not None:
+        assert tier in {"LOW", "MED", "HIGH"}, tier
+    with _tx(commit=True) as cur:
+        cur.execute(
+            _sql("UPDATE artifact_acl SET tier = ?, updated_at = CURRENT_TIMESTAMP "
+                 "WHERE run_id = ?"),
+            (tier, run_id))
+
+
+def set_artifact_stage(run_id: str, stage: str, *, approved_by: Optional[str] = None,
+                       deployed_by: Optional[str] = None) -> None:
+    """Сменить стадию жизненного цикла артефакта (выкатка/прод/откат).
+
+    stage ∈ {none, pending_approve, approved, prod, previous, retired}.
+    Реального CI-деплоя нет (плейсхолдер) — но движение по стадиям персистится и видно
+    в реестре/на дашборде. log_event пишет вызывающий (API).
+    """
+    assert stage in {"none", "pending_approve", "approved", "prod", "previous", "retired"}, stage
+    sets = ["stage = ?", "updated_at = CURRENT_TIMESTAMP"]
+    params: list = [stage]
+    if approved_by is not None:
+        sets.insert(1, "approved_by = ?")
+        params.append(approved_by)
+    if deployed_by is not None:
+        sets.insert(1, "deployed_by = ?")
+        params.append(deployed_by)
+    params.append(run_id)
+    with _tx(commit=True) as cur:
+        cur.execute(_sql(f"UPDATE artifact_acl SET {', '.join(sets)} WHERE run_id = ?"),
+                    tuple(params))
+
+
+def demote_prod_artifacts(experiment_id: str, except_run_id: str) -> list[str]:
+    """Перевести все prod-артефакты эксперимента (кроме нового) в 'previous'. Вернуть их run_id.
+
+    Используется при промоушене нового артефакта в прод: в проде эксперимента — один активный.
+    """
+    with _tx(commit=True) as cur:
+        cur.execute(
+            _sql("SELECT run_id FROM artifact_acl WHERE experiment_id = ? AND stage = 'prod' "
+                 "AND run_id != ?"),
+            (experiment_id, except_run_id))
+        demoted = [r[0] for r in cur.fetchall()]
+        if demoted:
+            cur.execute(
+                _sql("UPDATE artifact_acl SET stage = 'previous', updated_at = CURRENT_TIMESTAMP "
+                     "WHERE experiment_id = ? AND stage = 'prod' AND run_id != ?"),
+                (experiment_id, except_run_id))
+    return demoted
 
 
 def share_artifact(run_id: str, *, level: Optional[int], roles: Optional[list[str]],

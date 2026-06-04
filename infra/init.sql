@@ -128,7 +128,12 @@ CREATE TABLE IF NOT EXISTS artifact_acl (
     session_name  TEXT,
     check_status  TEXT NOT NULL DEFAULT 'none'
                   CHECK (check_status IN ('none','pending','passed','failed')),
-    check_detail  JSONB,                   -- результат security check (плейсхолдер)
+    check_detail  JSONB,                   -- результат security check (цепочка гейтов)
+    tier          TEXT CHECK (tier IS NULL OR tier IN ('LOW','MED','HIGH')),
+    stage         TEXT NOT NULL DEFAULT 'none'
+                  CHECK (stage IN ('none','pending_approve','approved','prod','previous','retired')),
+    approved_by   TEXT,                    -- кто подтвердил (HITL, Tier=HIGH)
+    deployed_by   TEXT,                    -- кто инициировал выкатку/перевод в прод
     share_status  TEXT NOT NULL DEFAULT 'private'
                   CHECK (share_status IN ('private','shared')),
     share_level   INTEGER,                 -- клиренс-уровень видимости (NULL пока приватный)
