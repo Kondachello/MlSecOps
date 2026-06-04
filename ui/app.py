@@ -335,7 +335,10 @@ def inject_css():
 # ─────────────────────────────── HELPERS ────────────────────────────────────
 def _api_headers() -> dict:
     h: dict = {}
-    if APP_DEBUG:
+    tok = st.session_state.get("access_token")
+    if tok:
+        h["Authorization"] = f"Bearer {tok}"
+    elif APP_DEBUG:
         h["X-Demo-Role"] = _role()
     return h
 
@@ -391,11 +394,12 @@ def _norm_finding(f: dict) -> dict:
 
 def _api_post(path, data, mock=None):
     try:
-        r = requests.post(f"{API}{path}", json=data, headers=_api_headers(), timeout=10)
+        r = requests.post(f"{API}{path}", json=data, headers=_api_headers(), timeout=30)
         if r.ok:
             return r.json()
-    except Exception:  # noqa: BLE001
-        pass
+        return {"ok": False, "error": r.text[:500], "status_code": r.status_code}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
     return mock
 
 
@@ -469,7 +473,53 @@ def _goto(page, **pending):
 
 
 def _role():
+    roles = st.session_state.get("roles") or []
+    if "MLSecOps" in roles:
+        return "MLSecOps"
+    if roles:
+        return roles[0]
     return st.session_state.get("role", "DS")
+
+
+def _sidebar_auth():
+    """JWT-логин (боевой режим) или переключатель роли (APP_DEBUG)."""
+    if APP_DEBUG:
+        st.session_state["role"] = st.sidebar.selectbox("Роль (demo)", ["DS", "MLSecOps", "CEO"])
+        return
+    if st.session_state.get("access_token"):
+        me = _api_get("/api/v1/auth/me")
+        if me and me.get("username"):
+            st.session_state["roles"] = me.get("roles", [])
+            st.sidebar.caption(f"**{me['username']}** · {', '.join(me.get('roles') or ['без роли'])}")
+            if st.sidebar.button("Выйти", use_container_width=True):
+                for k in ("access_token", "username", "roles", "role"):
+                    st.session_state.pop(k, None)
+                _rerun()
+            return
+        st.session_state.pop("access_token", None)
+    with st.sidebar.form("login", clear_on_submit=False):
+        st.markdown("**Вход**")
+        user = st.text_input("Логин", value=os.getenv("BOOTSTRAP_ADMIN_USER", "msecops"))
+        pwd = st.text_input("Пароль", type="password")
+        if st.form_submit_button("Войти", use_container_width=True):
+            try:
+                r = requests.post(
+                    f"{API}/api/v1/auth/login",
+                    json={"username": user, "password": pwd},
+                    timeout=8,
+                )
+                if r.ok:
+                    data = r.json()
+                    st.session_state["access_token"] = data["access_token"]
+                    st.session_state["roles"] = data.get("roles", [])
+                    st.session_state["username"] = user
+                    _rerun()
+                else:
+                    st.sidebar.error("Неверный логин или пароль")
+            except Exception as e:  # noqa: BLE001
+                st.sidebar.error(f"API недоступен: {API} ({e})")
+    st.sidebar.info("Запустите стенд: `docker compose -f infra/docker-compose.yml up --build`")
+    st.stop()
 
 
 _KIND = {"ok": "ok", "available": "ok", "prod": "ok", "production": "ok", "closed": "ok",
@@ -1236,8 +1286,7 @@ def render():
         "&#9670; MLSecOps</div><div style='color:#6B7280;font-size:.76rem;margin-bottom:.6rem'>"
         "Security Platform</div>", unsafe_allow_html=True)
 
-    if APP_DEBUG:
-        st.session_state["role"] = st.sidebar.selectbox("Роль (demo)", ["DS", "MLSecOps", "CEO"])
+    _sidebar_auth()
     st.sidebar.markdown(_pill(_role(), "info"), unsafe_allow_html=True)
     st.sidebar.divider()
 

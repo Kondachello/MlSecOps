@@ -7,7 +7,7 @@ REQ="${2:-requirements.txt}"
 
 python -m pip install --quiet 'cyclonedx-bom>=4.0,<7'
 
-cyclonedx-py requirements --input-file "${REQ}" --output-file "${OUT}" --output-format json
+cyclonedx-py requirements -i "${REQ}" -o "${OUT}" -of json
 
 test -s "${OUT}"
 echo "SBOM written: ${OUT} ($(wc -c < "${OUT}") bytes)"

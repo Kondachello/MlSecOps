@@ -26,6 +26,8 @@ x-backend-env: &backend-env
   GITHUB_REF: ${GITHUB_REF:-kate_merge}
   CI_INGEST_TOKEN: ${CI_INGEST_TOKEN:-}
   APP_DEBUG: ${APP_DEBUG:-false}
+  BOOTSTRAP_ADMIN_USER: ${BOOTSTRAP_ADMIN_USER:-msecops}
+  BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-admin-pass}
 
 services:
   postgres:

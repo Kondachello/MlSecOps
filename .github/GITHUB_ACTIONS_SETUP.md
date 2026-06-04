@@ -50,6 +50,7 @@ cd main
 | `GITHUB_TOKEN` | PAT `repo` + `workflow` (UI → dispatch) |
 | `GITHUB_REF` | `kate_merge` |
 | `CI_INGEST_TOKEN` | = Secret в GitHub |
+| `BOOTSTRAP_ADMIN_PASSWORD` | `admin-pass` (логин UI `msecops`) |
 
 ## 4. Проверка
 

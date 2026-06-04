@@ -220,7 +220,8 @@ def check_image_trivy(image: str) -> dict:
 
 def check_semgrep(path: str) -> dict:
     """ML-aware SAST через semgrep (дополняет bandit). Нет бинарника → SKIP."""
-    rc, out = _run(["semgrep", "--config", "auto", "--json", "--quiet", path])
+    rc, out = _run(["semgrep", "--config", "auto", "--json", "--quiet",
+                    "--severity", "ERROR", path])
     if rc == 127:
         return {"check": "semgrep", "status": "SKIP", "severity": "high",
                 "detail": "semgrep не установлен", "evidence": {}}

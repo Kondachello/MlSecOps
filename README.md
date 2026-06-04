@@ -42,7 +42,7 @@ docker compose -f infra/docker-compose.yml up --build
 
 | Сервис | URL |
 |--------|-----|
-| UI | http://localhost:8501 |
+| UI | http://localhost:8501 (логин: `msecops` / пароль из `BOOTSTRAP_ADMIN_PASSWORD`) |
 | Gatekeeper API | http://localhost:8000/docs |
 | MLflow (через прокси) | http://localhost:8000/mlflow |
 | MinIO console | http://localhost:9001 |

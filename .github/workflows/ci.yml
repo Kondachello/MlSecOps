@@ -193,9 +193,8 @@ jobs:
           else echo "ok — G4 blocked in container"; fi
       - name: smoke code gate in container (SAST+SCA+secrets, needs network for pip-audit)
         run: |
-          docker run --rm \
-            -v "$PWD:/work:ro" -w /work \
-            mlsec-gate-code --path src --stage ci --json > gate-g2-docker.json
+          docker run --rm -v "$PWD:/work:ro" \
+            mlsec-gate-code --path /work/src --stage ci --json > gate-g2-docker.json
           cat gate-g2-docker.json
           python scripts/ci/assert_gate_checks.py --require secrets sast cve_deps --no-fail gate-g2-docker.json
       - name: upload G2 docker report
