@@ -10,10 +10,11 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from core import db, identity
-from core.db import assign_role, log_event, ping, register_user, set_password
+from core.db import assign_role, init_db, log_event, ping, register_user, set_password
 
 
 def main() -> None:
+    init_db()
     user = os.getenv("BOOTSTRAP_ADMIN_USER", "msecops")
     email = os.getenv("BOOTSTRAP_ADMIN_EMAIL", "msecops@example.com")
     password = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "admin-pass")

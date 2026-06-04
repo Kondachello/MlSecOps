@@ -230,10 +230,28 @@ CREATE TABLE IF NOT EXISTS dataset_access (
 """
 
 
+def _bool_param(flag: bool):
+    """SQLite — 0/1; Postgres — BOOLEAN."""
+    return flag if _is_pg() else (1 if flag else 0)
+
+
+_PG_MIGRATIONS = (
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT",
+)
+
+
+def _apply_pg_migrations() -> None:
+    """Догоняем схему Postgres после init.sql (старые volumes без password_hash)."""
+    with _tx(commit=True) as cur:
+        for stmt in _PG_MIGRATIONS:
+            cur.execute(stmt)
+
+
 def init_db() -> None:
-    """Создать схему для SQLite-дев (идемпотентно). В Postgres схему ставит init.sql."""
+    """Создать схему для SQLite-дев (идемпотентно). В Postgres — init.sql + миграции."""
     if _is_pg():
-        return  # схема уже применена docker-entrypoint'ом из infra/init.sql
+        _apply_pg_migrations()
+        return
     conn = get_conn()
     try:
         conn.executescript(_SQLITE_SCHEMA)
@@ -356,7 +374,7 @@ def mark_dataset_verified(name: str, version: str, sha256: str, *, signed: bool 
                    VALUES (?, ?, ?, ?)
                    ON CONFLICT(sha256) DO UPDATE SET name=excluded.name, version=excluded.version"""
             ),
-            (sha256, name, version, 1 if signed else 0),
+            (sha256, name, version, _bool_param(signed)),
         )
 
 
@@ -817,7 +835,7 @@ def grant_access(user_id: int, dataset_name: str, dataset_version: str,
                     VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT (user_id, dataset_name, dataset_version)
                     DO UPDATE SET can_export = excluded.can_export"""),
-            (user_id, dataset_name, dataset_version, 1 if can_export else 0, granted_by),
+            (user_id, dataset_name, dataset_version, _bool_param(can_export), granted_by),
         )
 
 

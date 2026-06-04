@@ -21,6 +21,7 @@ def _sha(path: Path) -> str:
 
 
 def main() -> None:
+    db.init_db()
     if not db.ping():
         print("seed_ci_registry: DB unavailable", file=sys.stderr)
         sys.exit(1)
