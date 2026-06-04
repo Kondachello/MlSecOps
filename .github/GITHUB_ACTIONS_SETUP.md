@@ -1,4 +1,6 @@
-# GitHub Actions — настройка `main`
+# GitHub Actions — ветка `kate_merge`
+
+Рабочая ветка репозитория: **`kate_merge`** (не `main`). В GitHub: **Settings → General → Default branch → `kate_merge`**, если ещё не выставлено.
 
 ## 1. Push кода
 
