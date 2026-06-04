@@ -1,184 +1,116 @@
-"""dev_train_mock.py — реалистичный «ноутбук разработчика» (ML-исследование).
+"""dev_train_mock.py — простой «ноутбук разработчика»: версионирование модели через MLflow.
 
-Имитирует то, что делает DS у себя в IDE/Jupyter: логинится в нашем сервисе, получает
-токен, настраивает MLflow на наш auth-прокси и проводит небольшое ИССЛЕДОВАНИЕ —
-перебор нескольких моделей на одном датасете. Каждый прогон (run) = «сессия разработки»
-(данные + код + модель), которую потом видно в нашем сервисе на вкладке «Мои артефакты».
+Что делает (имитация работы DS в Jupyter):
+  1) логинится в НАШ сервис (получает JWT);
+  2) настраивает MLflow на наш auth-прокси (`/mlflow`) — это КЛЮЧЕВОЙ момент: личность,
+     владельца и теги проставляет СЕРВЕР, поэтому артефакт корректно попадает в наш сервис
+     и виден под твоим аккаунтом (а не под именем ОС);
+  3) обучает одну модель НЕСКОЛЬКО раз (v1, v2, v3 с разным C) и регистрирует версии в
+     MLflow Model Registry — видно, как идёт ВЕРСИОНИРОВАНИЕ модели;
+  4) каждый прогон (run) = «сессия» — появляется в нашем UI («Реестр» / «Мои артефакты»).
 
-ML здесь настоящий (sklearn на встроенном датасете breast cancer), но маленький и быстрый.
-Модель НЕ сохраняется в pickle (его блокирует G4) — логируем метрики, артефакты-отчёты и
-lineage датасета (mlflow.data → Data Digest).
+Версионирование ДАННЫХ — через `mlflow.log_input` (Data Digest = SHA содержимого датасета).
 
-КАК ЗАПУСТИТЬ:
-  1) подними стенд:   powershell -ExecutionPolicy Bypass -File infra\\run_local.ps1
-  2) в UI (http://localhost:8501) залогинься админом msecops/admin-pass,
-     зарегай этого пользователя (см. DEV_USER ниже) и выдай ему роль DS;
-  3) запусти:         python examples/dev_train_mock.py
-  4) открой в UI вкладку «Мои артефакты» → по каждой сессии: «Запустить security check» → «Поделиться».
+ВАЖНО: логируем ТОЛЬКО через прокси (через :8200/mlflow), НЕ напрямую в MLflow :5000 —
+иначе артефакт не получит владельца и «потеряется» в реестре.
+
+ЗАПУСК:
+  1) подними стенд:  .\\infra\\start.cmd   (UI :8501, backend :8200, MLflow :5000)
+  2) в UI залогинься msecops/admin-pass; при необходимости заведи DEV_USER и выдай ему роль DS;
+  3) python examples/dev_train_mock.py
+  4) смотри: UI «Реестр»/«Мои артефакты» (раны) и версии модели — в MLflow UI / GET /api/v1/models.
 """
 from __future__ import annotations
 
 import os
 
-# ВАЖНО: таймауты/ретраи MLflow задаём ДО import mlflow, иначе при недоступном
-# MLflow клиент молча ретраит ~2 минуты и выглядит как «вечное зависание».
-os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "10")
+# Таймауты MLflow задаём ДО import mlflow (иначе при недоступном MLflow клиент висит ~2 мин).
+os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "15")
 os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "2")
 
 import requests
 
-# ─────────────────────────── НАСТРОЙКИ (хардкод) ───────────────────────────
-# Креды разработчика к НАШЕМУ сервису (этот юзер должен быть зарегистрирован,
-# и MLSecOps должен выдать ему роль DS). Поменяй под своего пользователя.
-DEV_USER = "msecops"
+# ─────────────────────────── НАСТРОЙКИ ───────────────────────────
+DEV_USER = "msecops"            # этот юзер должен существовать и иметь роль (DS/MLSecOps)
 DEV_PASSWORD = "admin-pass"
-EXPERIMENT = f"{DEV_USER}_research"     # «аккаунт»/эксперимент разработчика
-
 BACKEND = os.getenv("GATEKEEPER_URL", "http://localhost:8200")
+EXPERIMENT = f"{DEV_USER}_demo"     # эксперимент = «проект» разработчика
+MODEL_NAME = "demo_model"           # имя в MLflow Model Registry; версии копятся под ним
+PARAMS_C = [0.01, 0.1, 1.0]         # три прогона → три версии модели
 
 
-def login() -> dict:
-    """Войти в наш сервис → заголовки с Bearer-токеном (как кнопка «MLflow-токен» в ЛК)."""
+def login() -> str:
     try:
         r = requests.post(f"{BACKEND}/api/v1/auth/login",
                           json={"username": DEV_USER, "password": DEV_PASSWORD}, timeout=10)
     except requests.exceptions.RequestException as e:
-        raise SystemExit(f"[ОШИБКА] Бэкенд недоступен на {BACKEND}. Запущен ли он? ({e})")
+        raise SystemExit(f"[ОШИБКА] Бэкенд недоступен на {BACKEND}: {e}")
     if r.status_code != 200:
-        raise SystemExit(
-            f"[ОШИБКА] Не удалось войти как {DEV_USER}: {r.status_code} {r.text}\n"
-            f"  Проверь: пользователь зарегистрирован и MLSecOps выдал ему роль DS.")
-    print(f"[ok] вошёл как {DEV_USER}, токен получен")
-    return {"Authorization": f"Bearer {r.json()['access_token']}", "_token": r.json()["access_token"]}
-
-
-def preflight(headers: dict) -> None:
-    """Убедиться, что MLflow доступен через прокси (иначе fail-fast с понятной подсказкой)."""
-    print("[..] проверяю доступность MLflow через прокси...", flush=True)
-    try:
-        pf = requests.post(f"{BACKEND}/mlflow/api/2.0/mlflow/experiments/search",
-                           headers={"Authorization": headers["Authorization"]},
-                           json={"max_results": 1}, timeout=10)
-    except requests.exceptions.RequestException as e:
-        raise SystemExit(
-            f"[ОШИБКА] MLflow через прокси не отвечает: {e}\n"
-            f"  Проще всего: powershell -ExecutionPolicy Bypass -File infra\\run_local.ps1")
-    if pf.status_code == 502:
-        raise SystemExit("[ОШИБКА] Прокси не достучался до MLflow (502). "
-                         "MLflow server на :5000 не запущен? Подними infra\\run_local.ps1")
-    if pf.status_code != 200:
-        raise SystemExit(f"[ОШИБКА] MLflow-прокси вернул {pf.status_code}: {pf.text[:200]}")
-    print("[ok] MLflow доступен")
-
-
-TARGET = "target"          # целевая колонка
-DATASET_ID = "sklearn.datasets.load_breast_cancer"
-
-
-def make_dataset():
-    """Лёгкий встроенный датасет (breast cancer, бинарная классификация) → train/test + фрейм."""
-    from sklearn.datasets import load_breast_cancer
-    from sklearn.model_selection import train_test_split
-
-    df = load_breast_cancer(as_frame=True).frame   # 569×31, колонка target ∈ {0,1}
-    cols = [c for c in df.columns if c != TARGET]
-    train_df, test_df = train_test_split(df, test_size=0.25, stratify=df[TARGET],
-                                         random_state=42)
-    return df, train_df, test_df, cols
-
-
-def build_models():
-    """Сетка экспериментов: каждый элемент станет отдельной сессией (run) в MLflow."""
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.pipeline import make_pipeline
-    from sklearn.preprocessing import StandardScaler
-
-    def logreg(C):  # logreg чувствителен к масштабу — нормируем фичи в пайплайне
-        return make_pipeline(StandardScaler(),
-                             LogisticRegression(C=C, max_iter=1000, class_weight="balanced"))
-    return [
-        ("logreg_C0.1", logreg(0.1), {"model": "logreg", "C": 0.1, "class_weight": "balanced"}),
-        ("logreg_C1.0", logreg(1.0), {"model": "logreg", "C": 1.0, "class_weight": "balanced"}),
-        ("rf_100", RandomForestClassifier(n_estimators=100, max_depth=8, random_state=0),
-         {"model": "random_forest", "n_estimators": 100, "max_depth": 8}),
-        ("rf_300", RandomForestClassifier(n_estimators=300, max_depth=12, random_state=0),
-         {"model": "random_forest", "n_estimators": 300, "max_depth": 12}),
-    ]
+        raise SystemExit(f"[ОШИБКА] Логин {DEV_USER}: {r.status_code} {r.text}\n"
+                         f"  Проверь: пользователь заведён и ему выдана роль.")
+    print(f"[ok] вошёл как {DEV_USER}")
+    return r.json()["access_token"]
 
 
 def main() -> None:
-    headers = login()
-    preflight(headers)
-
-    # Настроить MLflow-клиент на наш ПРОКСИ — токен едет в заголовке Authorization.
+    token = login()
+    # ВСЁ через прокси: сервер проставит владельца (mlsecops.owner), теги и доступы.
     os.environ["MLFLOW_TRACKING_URI"] = f"{BACKEND}/mlflow"
-    os.environ["MLFLOW_TRACKING_TOKEN"] = headers["_token"]
+    os.environ["MLFLOW_TRACKING_TOKEN"] = token
+
     import mlflow
     import mlflow.data
-    from sklearn.metrics import (accuracy_score, precision_score, recall_score,
-                                 f1_score, roc_auc_score, confusion_matrix)
+    import mlflow.sklearn
+    from sklearn.datasets import load_breast_cancer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import accuracy_score, roc_auc_score
+    from sklearn.model_selection import train_test_split
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
 
-    print(f"[..] готовлю датасет и эксперимент '{EXPERIMENT}'...", flush=True)
-    full_df, train_df, test_df, feat_cols = make_dataset()
+    df = load_breast_cancer(as_frame=True).frame           # маленький встроенный датасет
+    X, y = df.drop(columns="target"), df["target"]
+    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.25, stratify=y, random_state=42)
+    dataset = mlflow.data.from_pandas(df, name="breast_cancer", targets="target")  # версия данных = digest
+
     mlflow.set_experiment(EXPERIMENT)
-    # Датасет для lineage: from_pandas сам считает SHA-256 содержимого (Data Digest).
-    ds = mlflow.data.from_pandas(full_df, name="breast_cancer", targets=TARGET)
-
-    Xtr, ytr = train_df[feat_cols], train_df[TARGET]
-    Xte, yte = test_df[feat_cols], test_df[TARGET]
-
-    print(f"[..] провожу ML-исследование: {len(build_models())} сессий\n", flush=True)
-    results = []
-    for run_name, clf, params in build_models():
-        with mlflow.start_run(run_name=run_name) as run:
-            mlflow.log_input(ds, context="training")        # привязка данных к рану (lineage, G5)
-            mlflow.log_params(params)
-            mlflow.set_tags({                                # ИБ-теги (бэкенд читает их на /verify)
-                "mlflow.user": DEV_USER,                     # запасная атрибуция (основная — штамп прокси)
+    print(f"[..] эксперимент '{EXPERIMENT}', обучаю {len(PARAMS_C)} версии модели '{MODEL_NAME}'\n")
+    for ver, C in enumerate(PARAMS_C, start=1):
+        with mlflow.start_run(run_name=f"{MODEL_NAME}_v{ver}") as run:
+            mlflow.log_input(dataset, context="training")          # lineage данных (версия = digest)
+            mlflow.set_tags({
+                "mlflow.user": DEV_USER,
                 "security.data_source_type": "local",
-                "security.data_path_or_id": DATASET_ID,
-                "security.git_commit": os.getenv("GIT_COMMIT", "dev-local"),
-                "research.dataset_rows": len(full_df),
-                "research.positive_rate": round(float(full_df[TARGET].mean()), 4),
+                "model.name": MODEL_NAME,
+                "model.purpose": "демо-классификатор (breast cancer)",
+                "model.version_hint": f"v{ver}",
             })
-
+            mlflow.log_param("C", C)
+            clf = make_pipeline(StandardScaler(), LogisticRegression(C=C, max_iter=1000))
             clf.fit(Xtr, ytr)
-            pred = clf.predict(Xte)
             proba = clf.predict_proba(Xte)[:, 1]
-            metrics = {
-                "accuracy": accuracy_score(yte, pred),
-                "precision": precision_score(yte, pred, zero_division=0),
-                "recall": recall_score(yte, pred, zero_division=0),
-                "f1": f1_score(yte, pred, zero_division=0),
-                "roc_auc": roc_auc_score(yte, proba),
-            }
-            mlflow.log_metrics({k: round(v, 4) for k, v in metrics.items()})
+            acc = accuracy_score(yte, clf.predict(Xte))
+            auc = roc_auc_score(yte, proba)
+            mlflow.log_metric("accuracy", acc)
+            mlflow.log_metric("roc_auc", auc)
+            # Регистрируем версию в MLflow Model Registry (через прокси) → версионирование.
+            mlflow.sklearn.log_model(clf, artifact_path="model", registered_model_name=MODEL_NAME)
+            print(f"  v{ver}: C={C:<5} accuracy={acc:.3f} roc_auc={auc:.3f}  run={run.info.run_id[:8]}")
 
-            # Артефакты-отчёты (без pickle — его блокирует G4): метрики + матрица ошибок.
-            cm = confusion_matrix(yte, pred)
-            mlflow.log_dict({"confusion_matrix": cm.tolist(),
-                             "labels": ["class_0", "class_1"]}, "confusion_matrix.json")
-            mlflow.log_dict({"params": params,
-                             "metrics": {k: round(v, 4) for k, v in metrics.items()}},
-                            "model_card.json")
+    # Показать версии модели из реестра MLflow (видно версионирование).
+    try:
+        models = requests.get(f"{BACKEND}/api/v1/models",
+                              headers={"Authorization": f"Bearer {token}"}, timeout=15).json().get("models", [])
+        print("\n[ok] модели в MLflow Registry:")
+        for m in models:
+            print(f"   {m['name']} — версии: {m.get('latest_versions')}")
+    except requests.exceptions.RequestException:
+        pass
 
-            results.append((run_name, metrics["roc_auc"], run.info.run_id))
-            print(f"  [{run_name}]  roc_auc={metrics['roc_auc']:.3f}  "
-                  f"f1={metrics['f1']:.3f}  recall={metrics['recall']:.3f}  "
-                  f"(run {run.info.run_id[:8]})")
-
-    best = max(results, key=lambda x: x[1])
-    print(f"\n[ok] исследование завершено. Лучшая модель: {best[0]} (roc_auc={best[1]:.3f})")
-    print(f"     записано {len(results)} сессий в эксперимент '{EXPERIMENT}'\n")
-    print("Что дальше — проверь, что всё работает:")
-    print(f"  1) UI:  http://localhost:8501  (войди как {DEV_USER}) → вкладка «Мои артефакты»")
-    print( "     - увидишь свои сессии; они ПРИВАТНЫ (другой юзер их не видит);")
-    print( "     - жми «Запустить security check» (плейсхолдер → PASS), затем «Поделиться»;")
-    print( "     - по умолчанию виден ролям с твоим клиренсом и выше; можно задать кастомные роли.")
-    print( "  2) MLflow UI: http://localhost:5000  (раны эксперимента)")
-    print( "  3) Проверь изоляцию: войди другим DS-юзером — приватные сессии не видны,")
-    print( "     а после «Поделиться» появляются у него во вкладке «Доступно мне».")
+    print("\nГотово. В UI (http://localhost:8501):")
+    print("  • «Реестр» / «Мои артефакты» — три рана-сессии (зона «черновики», пока без проверки);")
+    print("  • запусти по ним security check → попадут в зону «прошли проверку»;")
+    print("  • версии модели смотри в MLflow UI (http://localhost:5000) и в GET /api/v1/models.")
 
 
 if __name__ == "__main__":

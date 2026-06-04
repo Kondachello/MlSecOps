@@ -173,14 +173,14 @@ def _artifact_zone(acl: dict) -> str:
 def _registry_visible(acl: dict, user: str, roles) -> bool:
     """Видимость артефакта в реестре.
 
+    - MLSecOps как security-ревьюер видит ВЕСЬ реестр (включая «свалку» — чужие непроверенные
+      черновики): иначе он не может триажить и допускать артефакты к проду;
     - владелец видит свой артефакт всегда (включая приватные черновики до проверки);
-    - MLSecOps как ревьюер видит ВСЕ артефакты, попавшие в пайплайн (на которых уже
-      запускали security check, т.е. check_status != 'none');
     - остальные — только расшаренное им (clearance/роли).
     """
-    if acl.get("owner") == user:
+    if "MLSecOps" in set(roles):
         return True
-    if "MLSecOps" in set(roles) and (acl.get("check_status") or "none") != "none":
+    if acl.get("owner") == user:
         return True
     return identity.can_view_artifact(acl, user, roles)
 
@@ -209,6 +209,7 @@ def _enrich_artifact(run: dict, acl: Optional[dict]) -> dict:
         "share_status": acl.get("share_status"),
         "share_level": acl.get("share_level"),
         "share_roles": acl.get("share_roles"),
+        "tags": run.get("tags", {}),          # security.*/research.* теги рана (для фильтра в реестре)
         "zone": _artifact_zone(acl),
     }
 

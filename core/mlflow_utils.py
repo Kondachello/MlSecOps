@@ -68,6 +68,9 @@ def _run_to_dict(r, by_id: Optional[dict] = None) -> dict:
         "start_time": r.info.start_time,
         "metrics": dict(r.data.metrics),
         "params": dict(r.data.params),
+        # Теги рана без внутренних mlflow.* (security.*/research.*/mlsecops.owner) —
+        # используются для авто-Tier (security_check) и фильтра по тегам в реестре.
+        "tags": {k: v for k, v in tags.items() if not k.startswith("mlflow.")},
     }
 
 

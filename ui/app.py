@@ -178,6 +178,21 @@ def get_json(path: str, default=None, timeout: int = 8):
     return data if data is not None else default
 
 
+def get_json_fresh(path: str, default=None, timeout: int = 8):
+    """Некэшированный GET — для динамичных списков (реестр/артефакты): ВСЕГДА свежие данные.
+
+    Реестр и список артефактов меняются от внешних экспериментов (ноутбук), поэтому их не кэшируем —
+    иначе на странице видны устаревшие данные до ручного «Обновить».
+    """
+    try:
+        r = api_get(path, timeout=timeout)
+        if r.ok:
+            return r.json()
+    except Exception:  # noqa: BLE001
+        pass
+    return default
+
+
 def _not_implemented(what: str, endpoint: str | None = None, note: str | None = None):
     """Честная заглушка: раздел есть в UI, но бэкенд-ручка ещё не реализована."""
     st.info(f"🚧 **{what}** — UI готов, бэкенд-ручка ещё не реализована (без фейк-данных).")
@@ -336,8 +351,7 @@ def page_dashboard():
     reg = get_json("/api/v1/registry", {}) or {}
     artifacts = reg.get("artifacts", [])
     events = (get_json("/api/v1/events?limit=100", {}) or {}).get("events", [])
-    incidents = (get_json("/api/v1/incidents_placeholder", None) or
-                 get_json("/api/v1/findings", {}) or {}).get("findings", [])
+    incidents = (get_json("/api/v1/findings", {}) or {}).get("findings", [])
     open_inc = [f for f in incidents if f.get("status") == "open"]
 
     zones = reg.get("zones", {})
@@ -425,7 +439,7 @@ def page_artifacts():
     st.subheader("Мои артефакты (сессии разработки MLflow)")
     st.caption("Каждый ран = сессия (data+код+модель). По умолчанию приватен. Чтобы открыть доступ "
                "другим ролям — сначала пройди security check, затем выбери видимость.")
-    data = get_json("/api/v1/artifacts", {}, timeout=30) or {}
+    data = get_json_fresh("/api/v1/artifacts", {}, timeout=30) or {}
     mine = data.get("mine", [])
     shared = data.get("shared_with_me", [])
     st.caption(f"Твой клиренс: {data.get('my_clearance')}")
@@ -499,7 +513,7 @@ def page_registry():
         _render_artifact_detail(rid)
         return
 
-    reg = get_json("/api/v1/registry", {}) or {}
+    reg = get_json_fresh("/api/v1/registry", {}) or {}
     artifacts = reg.get("artifacts", [])
     st.caption("Артефакты MLflow по зонам жизненного цикла. Открой артефакт → паспорт, цепочка "
                "гейтов, перезапуск проверки и выкатка.")
@@ -511,9 +525,14 @@ def page_registry():
                 "и (для общего обзора) запускают по ним security check.")
         return
 
-    # Фильтры по «тегам»/статусам (а не по поисковой строке).
+    # Фильтры по тегам (security.*) и статусам (а не по поисковой строке).
     owners = sorted({a.get("owner") or "?" for a in artifacts})
     tiers = sorted({a.get("tier") for a in artifacts if a.get("tier")})
+    all_tags = sorted({f"{k}={v}" for a in artifacts for k, v in (a.get("tags") or {}).items()
+                       if k.startswith("security.")})
+    ftag = (st.multiselect("Теги (security.*)", all_tags, key="reg_tags",
+                           help="Фильтр по тегам безопасности рана (источник данных, PII и т.п.).")
+            if all_tags else [])
     f1, f2, f3, f4 = st.columns(4)
     fz = f1.multiselect("Зона", ZONE_ORDER, format_func=lambda z: ZONE_LABEL.get(z, z), key="reg_zone")
     fc = f2.multiselect("Статус проверки", ["none", "pending", "passed", "failed"], key="reg_check")
@@ -528,6 +547,8 @@ def page_registry():
         if ft and a.get("tier") not in ft:
             return False
         if fo and (a.get("owner") or "?") not in fo:
+            return False
+        if ftag and not (set(ftag) & {f"{k}={v}" for k, v in (a.get("tags") or {}).items()}):
             return False
         return True
 
@@ -544,8 +565,10 @@ def page_registry():
         st.markdown(f"### {ZONE_LABEL.get(zone, zone)} &nbsp; {_pill(len(items), ZONE_KIND.get(zone,'muted'))}",
                     unsafe_allow_html=True)
         for a in items:
-            c1, c2 = st.columns([5, 1])
+            c1, c2, c3 = st.columns([5, 1, 1])
             badges = f"{_tpill(a.get('tier'))} &nbsp; {_spill(a.get('check_status') or 'none')}"
+            if (a.get("stage") or "none") != "none":
+                badges += " &nbsp; " + _spill(a.get("stage"))
             if a.get("share_status") == "shared":
                 badges += " &nbsp; " + _pill("SHARED", "ok")
             c1.markdown(
@@ -555,6 +578,20 @@ def page_registry():
                 unsafe_allow_html=True)
             if c2.button("Открыть →", key=f"reg_open_{a['run_id']}", use_container_width=True):
                 _open_artifact(a["run_id"])
+            # «Выкатить в прод» прямо из реестра — только MLSecOps, только для прошедших проверку
+            # и ещё не запущенных в выкатку (RBAC + статус/доступ аккаунта).
+            can_deploy = (_has("MLSecOps") and a.get("check_status") == "passed"
+                          and (a.get("stage") or "none") in ("none", "previous"))
+            if c3.button("🚀 В прод", key=f"reg_dep_{a['run_id']}", use_container_width=True,
+                         disabled=not can_deploy,
+                         help="Инициировать выкатку (MLSecOps, после успешной проверки). "
+                              "HIGH-Tier потребует Human Approve. Полный цикл — на странице артефакта."):
+                r = api_post(f"/api/v1/artifacts/{a['run_id']}/deploy", json={"reason": "выкатка из реестра"})
+                if r.status_code == 200:
+                    st.success(f"Выкатка инициирована: стадия {r.json().get('stage')}.")
+                    _invalidate(); _rerun()
+                else:
+                    st.error(r.json().get("detail", r.text))
 
 
 # ───────────────── СТРАНИЦА АРТЕФАКТА (паспорт + цепочка гейтов + деплой) ─────
@@ -580,7 +617,7 @@ def _render_artifact_detail(run_id: str):
         st.session_state.pop("_artifact_open", None)
         _rerun()
         return
-    card = get_json(f"/api/v1/artifacts/{run_id}", None)
+    card = get_json_fresh(f"/api/v1/artifacts/{run_id}", None)
     if card is None:
         st.error("Артефакт недоступен (нет в MLflow или нет прав).")
         return
