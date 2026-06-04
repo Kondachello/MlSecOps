@@ -5,6 +5,9 @@ set -euo pipefail
 OUT="${1:-sbom.json}"
 REQ="${2:-requirements.txt}"
 
-pip install --quiet cyclonedx-bom
-cyclonedx-py requirements -i "${REQ}" -o "${OUT}" --format json
+python -m pip install --quiet 'cyclonedx-bom>=4.0,<7'
+
+cyclonedx-py requirements --input-file "${REQ}" --output-file "${OUT}" --output-format json
+
+test -s "${OUT}"
 echo "SBOM written: ${OUT} ($(wc -c < "${OUT}") bytes)"

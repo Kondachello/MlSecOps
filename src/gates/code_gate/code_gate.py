@@ -148,16 +148,27 @@ def _parse_pip_audit(out: str) -> list[dict]:
     return vulns
 
 
+def _resolve_requirements_file(path: str) -> str | None:
+    """Файл зависимостей: явный .txt, рядом с path, либо корень репо (CI: --path src)."""
+    import os
+
+    if path.endswith(".txt") and os.path.isfile(path):
+        return path
+    local = os.path.join(path, "requirements.txt")
+    if os.path.isfile(local):
+        return local
+    for candidate in ("requirements.txt", os.path.join(os.getcwd(), "requirements.txt")):
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def check_cve(path: str) -> dict:
     """pip-audit — FAIL при любых известных CVE."""
-    import os
-    if path.endswith(".txt"):
-        req = path
-    else:
-        req = os.path.join(path, "requirements.txt")
-    if not os.path.isfile(req):
+    req = _resolve_requirements_file(path)
+    if not req:
         return {"check": "cve_deps", "status": "SKIP", "severity": "critical",
-                "detail": f"requirements.txt не найден по пути {req}", "evidence": {}}
+                "detail": f"requirements.txt не найден для {path}", "evidence": {}}
     rc, out = _run(["pip-audit", "-r", req, "-f", "json"])
     if rc == 127:
         return {"check": "cve_deps", "status": "SKIP", "severity": "critical",
