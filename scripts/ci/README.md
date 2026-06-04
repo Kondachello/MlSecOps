@@ -55,7 +55,7 @@
 
 ## Переменные
 
-- `GITHUB_TOKEN`, `GITHUB_REPO`, `GITHUB_REF=main` — для dispatch из Gatekeeper.
+- `GITHUB_TOKEN`, `GITHUB_REPO`, `GITHUB_REF=kate_merge` — для dispatch из Gatekeeper.
 - `COSIGN_PRIVATE_KEY`, `COSIGN_PASSWORD` — подпись (опционально).
 - `USE_GATEKEEPER=true`, `GATEKEEPER_URL` — preflight через API (когда реестр готов).
 - `vars.GATEKEEPER_URL` + `secrets.CI_INGEST_TOKEN` — ingest отчётов в findings/events.

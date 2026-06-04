@@ -27,7 +27,7 @@ Inference (G7) :8080 ──► Redis
 **MLflow наружу не публикуется.** Доступ только через бэкенд: `http://localhost:8000/mlflow`
 (JWT с `POST /api/v1/auth/token`). Внутри compose бэкенд ходит в `http://mlflow:5000`.
 
-**GitHub Actions:** после push в `main` запускается **ci.yml**. Настройка variables/secrets:
+**GitHub Actions:** после push в `kate_merge` запускается **ci.yml**. Настройка variables/secrets:
 **[.github/GITHUB_ACTIONS_SETUP.md](.github/GITHUB_ACTIONS_SETUP.md)**.
 
 ---

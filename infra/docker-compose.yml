@@ -23,7 +23,7 @@ x-backend-env: &backend-env
   MLFLOW_S3_ENDPOINT_URL: ${MLFLOW_S3_ENDPOINT_URL:-http://minio:9000}
   GITHUB_REPO: ${GITHUB_REPO:-}
   GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-  GITHUB_REF: ${GITHUB_REF:-main}
+  GITHUB_REF: ${GITHUB_REF:-kate_merge}
   CI_INGEST_TOKEN: ${CI_INGEST_TOKEN:-}
   APP_DEBUG: ${APP_DEBUG:-false}
 

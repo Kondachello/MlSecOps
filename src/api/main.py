@@ -144,7 +144,7 @@ class IngestDatasetRequest(BaseModel):
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "")
-GITHUB_REF = os.getenv("GITHUB_REF", "main")
+GITHUB_REF = os.getenv("GITHUB_REF", "kate_merge")
 CI_INGEST_TOKEN = os.getenv("CI_INGEST_TOKEN", "")
 APP_DEBUG = os.getenv("APP_DEBUG", "false").lower() == "true"
 UPLOAD_DIR = Path(__file__).resolve().parents[2] / "data"

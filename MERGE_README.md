@@ -13,8 +13,8 @@
 ## Что вручную дополнено при merge
 
 - `core/db.py`: из Коли + **`ingest_gate_report`**, рабочие **`add_finding`** / **`mark_false_positive`**, **`ping`** (из логики Рины)
-- `src/api/main.py`: `GITHUB_REF` по умолчанию **`main`**
-- `.github/workflows/ci.yml`: push на ветки **`main`** и **`Rina`**
+- `src/api/main.py`: `GITHUB_REF` по умолчанию **`kate_merge`**
+- `.github/workflows/ci.yml`: push на ветки **`kate_merge`** и **`Rina`**
 
 ## Структура (кратко)
 
@@ -31,7 +31,7 @@ main/
 
 ## CI (обновлено)
 
-- **ci.yml** — на `push` в `main`: G1–G5 + Docker gates + ingest (если `vars.GATEKEEPER_URL`).
+- **ci.yml** — на `push` в `kate_merge`: G1–G5 + Docker gates + ingest (если `vars.GATEKEEPER_URL`).
 - **verify.yml** / **train.yml** / **deploy.yml** — `workflow_dispatch` + `repository_dispatch`.
 - **Gatekeeper** — dispatch + `POST /api/v1/ci/ingest-reports` + register-model.
 

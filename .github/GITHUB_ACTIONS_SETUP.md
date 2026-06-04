@@ -2,7 +2,15 @@
 
 ## 1. Push кода
 
-Убедитесь, что в репозитории **`Kondachello/MlSecOps`** на ветке **`main`** лежит содержимое папки `main/` (workflows в `.github/workflows/`).
+Убедитесь, что в репозитории **`Kondachello/MlSecOps`** на ветке **`kate_merge`** лежит содержимое папки `main/` (workflows в `.github/workflows/`).
+
+**PAT для push:** у токена в [Fine-grained / classic PAT](https://github.com/settings/tokens) должен быть scope **`workflow`** (иначе GitHub отклонит push с `.github/workflows/*.yml`). Дополнительно: `repo` (или Contents: Read and write). Токен — только в `main/.env` (`GITHUB_TOKEN=...`), не в URL `git remote`.
+
+```powershell
+cd main
+$env:GITHUB_TOKEN = (Get-Content .env | Where-Object { $_ -match '^GITHUB_TOKEN=' }) -replace '^GITHUB_TOKEN=',''
+git -c "http.extraheader=AUTHORIZATION: bearer $env:GITHUB_TOKEN" push -u origin kate_merge
+```
 
 После push автоматически запустится workflow **ci**.
 
@@ -38,7 +46,7 @@ cd main
 |------------|------------|
 | `GITHUB_REPO` | `Kondachello/MlSecOps` |
 | `GITHUB_TOKEN` | PAT `repo` + `workflow` (UI → dispatch) |
-| `GITHUB_REF` | `main` |
+| `GITHUB_REF` | `kate_merge` |
 | `CI_INGEST_TOKEN` | = Secret в GitHub |
 
 ## 4. Проверка

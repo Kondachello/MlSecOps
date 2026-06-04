@@ -4,9 +4,9 @@ name: ci
 
 on:
   push:
-    branches: [main, Rina]
+    branches: [kate_merge, Rina]
   pull_request:
-    branches: [main, master]
+    branches: [kate_merge, master]
   workflow_dispatch:
 
 permissions:
