@@ -30,8 +30,8 @@ import requests
 # ─────────────────────────── НАСТРОЙКИ (хардкод) ───────────────────────────
 # Креды разработчика к НАШЕМУ сервису (этот юзер должен быть зарегистрирован,
 # и MLSecOps должен выдать ему роль DS). Поменяй под своего пользователя.
-DEV_USER = "kolya1"
-DEV_PASSWORD = "123"
+DEV_USER = "msecops"
+DEV_PASSWORD = "admin-pass"
 EXPERIMENT = f"{DEV_USER}_research"     # «аккаунт»/эксперимент разработчика
 
 BACKEND = os.getenv("GATEKEEPER_URL", "http://localhost:8200")

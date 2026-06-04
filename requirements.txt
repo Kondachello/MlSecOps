@@ -13,6 +13,7 @@ pandas
 requests
 python-dotenv
 python-multipart
+pyyaml          # конфиг цепочки гейтов (config/gates.yml); обычно тянется mlflow
 
 # Auth / Identity (локальный JWT-issuer + хэш паролей)
 bcrypt

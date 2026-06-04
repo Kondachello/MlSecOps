@@ -1,0 +1,2992 @@
+╭─── Claude Code v2.1.161 ─────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                 Welcome back БОСС!                 │ started                 │
+│                                                    │ Run /init to create a … │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ What's new              │
+│                        ▘▘ ▝▝                       │ `OTEL_RESOURCE_ATTRIBU… │
+│     Opus 4.8 · Claude Pro · vg13ak@gmail.com's     │ `claude agents` rows n… │
+│     Organization                                   │ `/mcp` now collapses c… │
+│           ~\Desktop\Новая папка\MlSecOps           │ /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+   Opus 4.8 is here! Now defaults to high effort · /effort xhigh for your hardest tasks
+
+> /effort                                                                       
+  ⎿  Set effort level to max (this session only): Maximum capability with deepest
+     reasoning
+
+> Я пишу проект @docs/PRD.md  Архитектура и функционал @docs/architecture.md    
+  @docs/PRD @"docs/PRD v0.md"   Вся остальная документация в @docs\ . На данный 
+  момент сделано @HANDOFF.md  Но есть проблема: мой фронтенд не актуален и      
+  другой разработчик делал фронтенд не зависимо от бекенда - весь репозиторий   
+  его приложения в @todo_frontend\ - описание этого фронтенда в                 
+  @todo_frontend/docs\ в файлах B_C_* файлах (вроде бы). ТВОЯ ЗАДАЧА: смержить  
+  фронтенд второго разработчика и мой бекенд. При этом мой бекенд вообще не     
+  должен пострадать. Если в новом фронтенде будут кнопки для которых не будет   
+  бекенда, то просто оставляй там заглушки. Но по идеи для много уже есть и     
+  фронт и бек - надо просто смержить. Если ты видишь, что вещи можно смержить,  
+  но формально они чуть чуть отличаются, то все равно мержи. Ты можешь задавать 
+  мне вопрос по функционалу и тд. Все документация у тебя есть. Распланируй     
+  для себя как ты будешь мержить чужой фронт и мой бек, задай мне уточняющие    
+  вопросы и начинай мержить                                                     
+  ⎿  Read docs\PRD v0.md (64 lines)
+  ⎿  Read docs\PRD.md (37 lines)
+  ⎿  Read docs\architecture.md (157 lines)
+  ⎿  Listed directory docs\
+  ⎿  Read HANDOFF.md (569 lines)
+  ⎿  Listed directory todo_frontend\
+  ⎿  Listed directory todo_frontend\docs\
+
+● I'll dive into this. First let me thoroughly explore both codebases — the
+  other developer's frontend in todo_frontend/ and your current backend — before
+  forming a plan. Let me start by mapping out the structures and reading the
+  key description files.
+
+  Read 3 files (ctrl+o to expand)
+
+● This is very clear now. The todo_frontend/ is the B+C developer's work
+  (Security Gates + CI/CD + ML models + Runtime + Monitoring + UI), built to run
+  without the "A" backend (mocks/fallbacks). Your backend IS "A" — the central
+  Gatekeeper, DB, auth, MLflow integration. So the merge is: take their
+  Streamlit UI (10 tabs, currently on mocks) and wire it to your real backend.
+
+  Let me now read the actual code — the new frontend, your current frontend, and
+  your backend API — plus the frontend/API specs.
+
+  Read 2 files (ctrl+o to expand)
+
+● Now let me read the rest of the new frontend (deploy/approve, users,
+  sidebar/role-switch, main) and your full backend API to map what's implemented
+  vs. stubbed.
+
+  Read 2 files (ctrl+o to expand)
+
+● I now have a clear picture of both UIs and the backend. Before finalizing the
+  plan and questions, let me verify what already exists in your repo's src/,
+  core/, and infra/ (since your backend already imports src.gates.*), compare
+  requirements, and read the one module the new UI directly imports
+  (src/common/controls.py).
+
+  Searched for 3 patterns, read 3 files (ctrl+o to expand)
+
+● I've now fully mapped both sides. Here's the situation and my merge plan, then
+  a few decisions I need from you.
+
+  Что я выяснил
+
+  Твой репозиторий — это бэкенд "A" (auth/JWT, RBAC, MLflow-прокси,
+  приватность/шаринг артефактов, БД, аудит) + уже лежащие гейты B (src/gates/*).
+  Папка todo_frontend/ — это полный репозиторий другого разработчика (B+C), и
+  его главная ценность для нас — полированный UI на 12 страниц (тёмная тема),
+  который написан под «воображаемый» контракт из docs/11_BACKEND_API.md и
+  работает на моках + fallback к API, БЕЗ аутентификации (роль — через
+  демо-переключатель).
+
+  Ключевой конфликт: новый UI не знает про аутентификацию, а твой бэкенд её
+  требует (Bearer-токен на каждый запрос). Плюс часть эндпоинтов у тебя
+  реальные, часть — заглушки.
+
+  Карта эндпоинтов (что реально, что заглушка)
+
+  Раздел нового UI: История событий
+  Эндпоинт: /api/v1/events
+  Статус в твоём бэке: ✅ реально (нужен адаптер имён полей)
+  ────────────────────────────────────────
+  Раздел нового UI: Проверка хеш-цепочки
+  Эндпоинт: /api/v1/events/verify_chain
+  Статус в твоём бэке: ➕ нет — добавлю (обёртка над db.verify_chain())
+  ────────────────────────────────────────
+  Раздел нового UI: Пользователи/Админка
+  Эндпоинт: /api/v1/admin/users,/roles,/access
+  Статус в твоём бэке: ✅ реально (+ нужна авторизация)
+  ────────────────────────────────────────
+  Раздел нового UI: Инструменты/Сканеры
+  Эндпоинт: /api/v1/ci/trigger,/files,/upload
+  Статус в твоём бэке: ✅ реально (есть в моём UI)
+  ────────────────────────────────────────
+  Раздел нового UI: Реестр
+  Эндпоинт: /api/v1/models
+  Статус в твоём бэке: 🟡 частично (реестр пуст → адаптер+мок)
+  ────────────────────────────────────────
+  Раздел нового UI: Реестр/Паспорт
+  Эндпоинт: /models/{name}/versions,/datasets/{key}
+  Статус в твоём бэке: ⛔ заглушка → мок
+  ────────────────────────────────────────
+  Раздел нового UI: Находки
+  Эндпоинт: /api/v1/findings,/{id}/fp|rerun|close
+  Статус в твоём бэке: ⛔ заглушка → мок
+  ────────────────────────────────────────
+  Раздел нового UI: Верификация
+  Эндпоинт: /api/v1/verify
+  Статус в твоём бэке: ⛔ заглушка → мок
+  ────────────────────────────────────────
+  Раздел нового UI: Раннер гейтов
+  Эндпоинт: /api/v1/scan (матрица)
+  Статус в твоём бэке: ⛔ заглушка → мок
+  ────────────────────────────────────────
+  Раздел нового UI: CI/CD логи
+  Эндпоинт: /api/v1/cicd/runs
+  Статус в твоём бэке: ⛔ нет → мок
+  ────────────────────────────────────────
+  Раздел нового UI: Деплой/Approve
+  Эндпоинт: /deploy/{m}/{v}/approve
+  Статус в твоём бэке: ⛔ заглушка → мок
+  ────────────────────────────────────────
+  Раздел нового UI: Карта покрытия/Контур
+  Эндпоинт: src/common/controls.py
+  Статус в твоём бэке: ➕ перенесу модуль (pure-data)
+
+  Чего в новом UI вообще НЕТ, но это рабочая фича твоего бэка: «Личный кабинет»
+  (MLflow-токен), «Мои артефакты» (приватность/шаринг ранов — главная фича),
+  «MLflow раны».
+
+  Моя стратегия (черновик)
+
+  1. Объединённый UI кладу в корневой ui/app.py (заменяю свой устаревший);
+  todo_frontend/ не трогаю (остаётся как референс); бэкенд не меняю, кроме
+  одного аддитивного эндпоинта verify_chain.
+  2. Беру 12-страничный UI + тему как основу, прикручиваю слой аутентификации из
+  моего UI (логин/регистрация, JWT в session_state, Bearer на всех запросах).
+  3. Реальные эндпоинты — подключаю с адаптерами форм; заглушки — оставляю на
+  моках (как ты и просил).
+  4. Переношу src/common/controls.py (нужен 2 страницам).
+
+  Прежде чем кодить — 3 развилки, которые меняют дизайн:
+
+● User answered Claude's questions:
+  ⎿  · Новый фронт — демо без логина (роль через переключатель). Твой бэкенд 
+     требует JWT-логин и RBAC. Как сделать вход в объединённом UI? → Только 
+     реальный логин
+     · В твоём UI есть рабочие вкладки, которых НЕТ в новом фронте: «Личный 
+     кабинет» (MLflow-токен), «Мои артефакты» (приватность/шаринг ранов — 
+     ключевая фича бэка), «MLflow раны». Что с ними? → Тебе их надо добавить, но
+     чтобы они вписывались по логике в существующий бек. ТО есть они точно 
+     должны быть, но мб по другому называться или с чем то мержится
+     · Для разделов с заглушками в бэке (Реестр, Паспорт, Находки, CI/CD-логи, 
+     Верификация, Деплой) новый фронт рисует богатые МОК-данные. Что показывать 
+     в объединённом UI? → Честные пустые заглушки
+
+● Got it — clear direction:
+  1. Real login only (no demo role-switch; roles strictly from /auth/me).
+  2. My working tabs must stay, but integrated logically into the structure
+  (rename/merge as sensible) rather than bolted on.
+  3. Honest empty stubs — strip the fake MOCK data; where the backend is a stub,
+  show "не реализовано", not fake records.
+
+  That last one means I'll rewrite the new UI's data layer: drop all MOCK_*,
+  render real data where the backend is real, and a consistent honest
+  placeholder where it's stubbed. Let me read the exact backend response shapes
+  I'll need adapters for, plus the Streamlit config.
+
+  Read 1 file (ctrl+o to expand)
+
+● I have the events/users/chain shapes I need. Let me read the last pieces —
+  identity.py (roles, clearance helpers), mlflow_utils.py (runs/models shapes my
+  real tabs use), the Streamlit theme config, and how start.cmd launches the UI
+  — then I'll build.
+
+  Read 2 files, listed 1 directory (ctrl+o to expand)
+
+● Key confirmations: events shape is {action, asset, result, reason, ...}
+  (adapter→type/detail), verify_chain()→{ok, broken_at, count}, list_models() is
+  minimal {name, latest_versions}, roles come from /auth/me, and there's
+  already an APP_DEBUG-gated demo-role mechanism in the backend (which I'll
+  leave unused per "real login only"). Let me grab the theme config and the
+  start.cmd launch/env, then build.
+
+  Read 2 files (ctrl+o to expand)
+
+● I have everything I need. Here's the final design before I write code:
+
+  - Entry: real login/register only (JWT), roles from /auth/me, refreshed each
+  render (handles role grants + token expiry).
+  - Look: keep the new UI's dark theme + CSS + helpers; navigation by
+  role-filtered sidebar radio.
+  - Real pages (wired to your backend): Дашборд (real counts), Кабинет (merges
+  my tab_cabinet + MLflow runs), Мои артефакты (privacy/sharing), История
+  (events, with adapter + new verify_chain endpoint), Инструменты (real gate
+  runner via /ci/trigger + upload), Пользователи (merges my tab_admin), Карта
+  покрытия + Контур (real controls.py).
+  - Honest stubs (no fake data): Реестр (real but empty registry), Паспорт,
+  Находки, Верификация, Раннер-матрица, CI/CD логи, Деплой/Approve.
+  - Backend: one additive endpoint GET /api/v1/events/verify_chain; nothing else
+  touched.
+
+  Let me create the supporting files first.
+
+● Write(.streamlit\config.toml)
+  ⎿  Wrote 11 lines to .streamlit\config.toml
+       1 [theme]
+       2 base = "dark"
+       3 primaryColor = "#6366F1"
+       4 backgroundColor = "#0B0E16"
+       5 secondaryBackgroundColor = "#131725"
+       6 textColor = "#E6E9F2"
+       7 font = "sans serif"
+       8 
+       9 [client]
+      10 toolbarMode = "minimal"
+     … +1 line (ctrl+o to expand)
+● Write(src\common\__init__.py)
+  ⎿  Wrote 6 lines to src\common\__init__.py
+      1 """src/common — общие модули, переиспользуемые UI/рантаймом.
+      2 
+      3 Сейчас здесь только `controls.py` — каталог контролей безопасност
+        и (GRC-обвязка
+      4 «угроза → контроль → тест → покрытие»), который рендерит UI на вк
+        ладках
+      5 «Карта покрытия» и «Контур». Модуль pure-data, без внешних зависи
+        мостей.
+      6 """
+
+● Now the controls catalog (copied verbatim — it's standalone pure-data):
+
+● Write(src\common\controls.py)
+  ⎿  Wrote 171 lines to src\common\controls.py
+         нтроль → тест → покрытие».асности — единый источник «угроза → ко
+       3 Это GRC-обвязка (как «Карта покрытия» у эталонных платформ): каж
+       4 контролю, каждый контроль — к гейту/слою и к конкретным тестам, 
+         и имеет статус:
+       6   - planned  — инфраструктурный, зона A (Vault/Keycloak/Caddy/PK
+       7   - accepted — остаточный риск принят через RiskAcceptance (GRC 
+         exception).
+       9 Используется в UI (вкладка «Карта покрытия») и может проверяться
+      10 ID контролей в стиле SUP-/DATA-/CODE-/RT-/DOS-/ACC-/CRED-/EXF-/M
+         ON-/VIS-/GOV-/CI-.
+     … +248 lines (ctrl+o to expand)
+
+● Now the main deliverable — the merged ui/app.py. This replaces my outdated UI
+  with the new dev's themed 12-section app, grafted onto real auth + real
+  backend data, with honest stubs where the backend isn't ready.
+
+● Write(ui\app.py)
+  ⎿  Added 726 lines, removed 170 lines
+        1 -"""Streamlit UI — личный кабинет MLSecOps-платформы.          
+        1 +"""Streamlit UI — MLSecOps Platform (объединённый фронтенд).  
+        2  
+        3 -Сначала экран входа/регистрации (JWT от бэкенда хранится в ses
+          -sion_state),                                                  
+        4 -затем вкладки личного кабинета (docs/14_FRONTEND_UI.md). Конте
+          -нт — по ролям из /auth/me.                                    
+        5 -Все запросы к Gatekeeper идут с заголовком Authorization: Bear
+          -er <token>.                                                   
+        3 +Сюда смержены: красивый многостраничный UI второго разработчик
+          +а (тёмная тема, разделы                                       
+        4 +Дашборд/Реестр/Паспорт/История/Находки/CI-CD/Деплой/Карта покр
+          +ытия/Контур) И рабочий                                        
+        5 +личный кабинет нашего бэкенда A (аутентификация, приватность/ш
+          +аринг артефактов MLflow,                                      
+        6 +сканеры через /ci/trigger, админка).                          
+        7 +                                                              
+        8 +Принципы объединения:                                         
+        9 +- Вход — ТОЛЬКО реальный логин (JWT от бэкенда). Роли берутся 
+          +из /auth/me (RBAC),                                           
+       10 +  обновляются на каждом рендере (учёт выдачи/отзыва роли и ист
+          +ечения токена).                                               
+       11 +- Все запросы к Gatekeeper идут с заголовком Authorization: Be
+          +arer <token>.                                                 
+       12 +- Данные — из реального API. Где бэкенд ещё ЗАГЛУШКА — показыв
+          +аем честный плейсхолдер                                       
+       13 +  «не реализовано», без фейковых mock-данных.                 
+       14 +- Разделы фильтруются по ролям пользователя.                  
+       15  """
+       16  from __future__ import annotations
+       17  
+       18 +import datetime as _dt                                        
+       19 +import json                                                   
+       20  import os
+       21 +import sys                                                    
+       22  
+       23  try:
+       24      import streamlit as st
+       13 -    import requests as _http                                  
+       14 -except Exception:  # graceful для py_compile                  
+       15 -    st = None                                                 
+       16 -    _http = None                                              
+       25 +    import requests                                           
+       26 +    _HAS_STREAMLIT = True                                     
+       27 +except Exception:  # graceful для py_compile без установленных
+          + пакетов                                                      
+       28 +    _HAS_STREAMLIT = False                                    
+       29 +    st = None  # type: ignore                                 
+       30 +    requests = None  # type: ignore                           
+       31  
+       32 +# Каталог контролей (угроза→контроль→тест→покрытие). Pure-data
+          + модуль без зависимостей.                                     
+       33 +sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abs
+          +path(__file__))))                                             
+       34 +try:                                                          
+       35 +    from src.common import controls as CTRL                   
+       36 +except Exception:  # noqa: BLE001                             
+       37 +    CTRL = None                                               
+       38 +                                                              
+       39  API = os.getenv("GATEKEEPER_URL", "http://localhost:8000")
+       40  APP_DEBUG = os.getenv("APP_DEBUG", "false").lower() == "true"
+       41 +MLFLOW_UI_URL = os.getenv("MLFLOW_UI_URL", "http://localhost:5
+          +000")                                                         
+       42  
+       43  ALL_ROLES = ["DS", "DE", "MLSecOps", "Product", "CEO"]
+       44 +ROLE_LEVEL = {"DS": 1, "DE": 1, "Product": 2, "MLSecOps": 3, "
+          +CEO": 4}                                                      
+       45  
+       46 +ALL_GATES = ["G1", "G2", "G3", "G4", "G5"]                    
+       47 +GATE_TITLE = {"G1": "Data", "G2": "Code", "G3": "Supply", "G4"
+          +: "Model", "G5": "Registry"}                                  
+       48 +THREAT_MAP = {                                                
+       49 +    "G1": "#1 Data Poisoning · #2 PII", "G2": "#8 CVE · #10 Се
+          +креты",                                                       
+       50 +    "G3": "#9 Typosquatting · #3 Источник", "G4": "#3 Pickle/R
+          +CE · #4 Подмена · #26 Подпись",                               
+       51 +    "G5": "#20 Shadow AI · #23 Lineage",                      
+       52 +}                                                             
+       53  
+       24 -# ---- HTTP-хелперы (инжектят Bearer-токен из сессии) --------
+          ------------------                                             
+       54 +                                                              
+       55 +# ─────────────────────────────── СТИЛЬ ──────────────────────
+          +────────────────                                              
+       56 +_CSS = """                                                    
+       57 +<style>                                                       
+       58 +@import url('https://fonts.googleapis.com/css2?family=Inter:wg
+          +ht@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&disp
+          +lay=swap');                                                   
+       59 +:root{                                                        
+       60 +  --bg:#0B0E16; --panel:#121626; --panel2:#171C2E; --line:#262
+          +C40;                                                          
+       61 +  --ink:#E6E9F2; --muted:#8B93A7; --accent:#6366F1; --accent2:
+          +#22D3EE;                                                      
+       62 +  --ok:#34D399; --okbg:#0E2A22; --bad:#F87171; --badbg:#2A1316
+          +;                                                             
+       63 +  --warn:#FBBF24; --warnbg:#2A2210; --info:#818CF8; --infobg:#
+          +171A33;                                                       
+       64 +}                                                             
+       65 +html,body,[class*="css"]{font-family:'Inter',system-ui,sans-se
+          +rif;}                                                         
+       66 +.stApp{background:radial-gradient(1200px 600px at 20% -10%, #1
+          +61B2E 0%, var(--bg) 55%);}                                    
+       67 +#MainMenu,footer{visibility:hidden;}                          
+       68 +[data-testid="stSidebarCollapsedControl"],[data-testid="collap
+          +sedControl"]{visibility:visible!important;display:flex!importa
+          +nt;}                                                          
+       69 +.block-container{padding-top:1.6rem;max-width:1240px;}        
+       70 +h1{font-weight:800;letter-spacing:-.025em;font-size:1.7rem;col
+          +or:var(--ink);}                                               
+       71 +h2{font-weight:700;font-size:1.25rem;color:var(--ink);}       
+       72 +h3{font-weight:650;font-size:1.0rem;color:var(--ink);margin-to
+          +p:1.1rem;padding-bottom:.3rem;                                
+       73 +   border-bottom:1px solid var(--line);}                      
+       74 +p,li,span,label,div{color:var(--ink);}                        
+       75 +small,.muted{color:var(--muted)!important;}                   
+       76 +code,.mono{font-family:'JetBrains Mono',monospace;font-size:.8
+          +2rem;color:#C7D2FE;                                           
+       77 +   background:#0F1424;padding:.05rem .35rem;border-radius:6px;
+          +}                                                             
+       78 +/* sidebar */                                                 
+       79 +section[data-testid="stSidebar"]{background:linear-gradient(18
+          +0deg,#0C1020,#0A0D18);border-right:1px solid var(--line);}    
+       80 +section[data-testid="stSidebar"] *{color:#C4CBDC;}            
+       81 +section[data-testid="stSidebar"] [role="radiogroup"] label{pad
+          +ding:.4rem .55rem;border-radius:10px;margin:1px 0;            
+       82 +   border:1px solid transparent;transition:.15s;}             
+       83 +section[data-testid="stSidebar"] [role="radiogroup"] label:hov
+          +er{background:#141A2E;border-color:var(--line);}              
+       84 +/* metric cards */                                            
+       85 +[data-testid="stMetric"]{background:linear-gradient(180deg,var
+          +(--panel),var(--panel2));                                     
+       86 +  border:1px solid var(--line);border-radius:14px;padding:.8re
+          +m 1rem;                                                       
+       87 +  box-shadow:0 8px 24px rgba(0,0,0,.25);}                     
+       88 +[data-testid="stMetricValue"]{font-weight:800;color:var(--ink)
+          +;}                                                            
+       89 +[data-testid="stMetricLabel"]{color:var(--muted);}            
+       90 +/* expanders / containers */                                  
+       91 +[data-testid="stExpander"]{background:var(--panel);border:1px 
+          +solid var(--line);border-radius:14px;}                        
+       92 +[data-testid="stExpander"] summary{font-weight:600;}          
+       93 +/* buttons */                                                 
+       94 +.stButton>button{background:var(--panel2);border:1px solid var
+          +(--line);color:var(--ink);                                    
+       95 +  border-radius:11px;font-weight:600;padding:.45rem 1rem;trans
+          +ition:.15s;}                                                  
+       96 +.stButton>button:hover{border-color:var(--accent);color:#fff;b
+          +ox-shadow:0 0 0 3px rgba(99,102,241,.15);}                    
+       97 +/* dataframe */                                               
+       98 +[data-testid="stDataFrame"]{border:1px solid var(--line);borde
+          +r-radius:14px;overflow:hidden;}                               
+       99 +/* pills */                                                   
+      100 +.pill{display:inline-block;padding:.14rem .6rem;border-radius:
+          +999px;font-size:.73rem;                                       
+      101 +  font-weight:700;letter-spacing:.03em;border:1px solid transp
+          +arent;}                                                       
+      102 +.pill-ok{background:var(--okbg);color:var(--ok);border-color:#
+          +14533c;}                                                      
+      103 +.pill-bad{background:var(--badbg);color:var(--bad);border-colo
+          +r:#5b2026;}                                                   
+      104 +.pill-warn{background:var(--warnbg);color:var(--warn);border-c
+          +olor:#564216;}                                                
+      105 +.pill-info{background:var(--infobg);color:var(--info);border-c
+          +olor:#2c2f63;}                                                
+      106 +.pill-muted{background:#1A2034;color:var(--muted);border-color
+          +:var(--line);}                                                
+      107 +/* event/finding cards */                                     
+      108 +.card{background:var(--panel);border:1px solid var(--line);bor
+          +der-left:4px solid var(--muted);                              
+      109 +  border-radius:12px;padding:.7rem .9rem;margin:.45rem 0;box-s
+          +hadow:0 6px 18px rgba(0,0,0,.18);}                            
+      110 +.card.ok{border-left-color:var(--ok);} .card.bad{border-left-c
+          +olor:var(--bad);}                                             
+      111 +.card.warn{border-left-color:var(--warn);} .card.info{border-l
+          +eft-color:var(--accent2);}                                    
+      112 +.card .h{font-weight:700;font-size:.92rem;}                   
+      113 +.card .s{color:var(--muted);font-size:.8rem;}                 
+      114 +/* pipeline */                                                
+      115 +.stage{display:flex;align-items:center;gap:.6rem;padding:.5rem
+          + .7rem;border:1px solid var(--line);                          
+      116 +  border-radius:11px;background:var(--panel);margin:.3rem 0;} 
+      117 +.stage.ok{border-left:4px solid var(--ok);} .stage.bad{border-
+          +left:4px solid var(--bad);}                                   
+      118 +.stage.muted{border-left:4px solid var(--muted);opacity:.7;}  
+      119 +.dot{width:9px;height:9px;border-radius:50%;display:inline-blo
+          +ck;}                                                          
+      120 +.errbox{background:var(--badbg);border:1px solid #5b2026;borde
+          +r-radius:10px;padding:.55rem .8rem;                           
+      121 +  color:#FCA5A5;font-family:'JetBrains Mono',monospace;font-si
+          +ze:.8rem;}                                                    
+      122 +hr{border-color:var(--line);}                                 
+      123 +</style>                                                      
+      124 +"""                                                           
+      125 +                                                              
+      126 +                                                              
+      127 +def inject_css():                                             
+      128 +    st.markdown(_CSS, unsafe_allow_html=True)                 
+      129 +                                                              
+      130 +                                                              
+      131 +# ─────────────────────────── HTTP-слой (Bearer-токен) ───────
+          +────────────────                                              
+      132  def _auth_headers() -> dict:
+      133      tok = st.session_state.get("token")
+      134      return {"Authorization": f"Bearer {tok}"} if tok else {}
+      135  
+      136  
+       30 -def api_post(path: str, json=None, headers=None, **kw):       
+      137 +def api_get(path: str, **kw):                                 
+      138 +    return requests.get(f"{API}{path}", headers=_auth_headers(
+          +), **kw)                                                      
+      139 +                                                              
+      140 +                                                              
+      141 +def api_post(path: str, json=None, headers=None, files=None, *
+          +*kw):                                                         
+      142      h = _auth_headers()
+      143      if headers:
+      144          h.update(headers)
+       34 -    return _http.post(f"{API}{path}", json=json, headers=h, **
+          -kw)                                                           
+      145 +    return requests.post(f"{API}{path}", json=json, files=file
+          +s, headers=h, **kw)                                           
+      146  
+      147  
+       37 -def api_get(path: str, **kw):                                 
+       38 -    return _http.get(f"{API}{path}", headers=_auth_headers(), 
+          -**kw)                                                         
+      148 +def get_json(path: str, default=None, timeout: int = 5):      
+      149 +    """GET → распарсенный JSON или default. БЕЗ mock-фолбэка (
+          +честные заглушки в UI)."""                                    
+      150 +    try:                                                      
+      151 +        r = api_get(path, timeout=timeout)                    
+      152 +        if r.ok:                                              
+      153 +            return r.json()                                   
+      154 +    except Exception:  # noqa: BLE001                         
+      155 +        pass                                                  
+      156 +    return default                                            
+      157  
+      158  
+      159 +def _not_implemented(what: str, endpoint: str | None = None, n
+          +ote: str | None = None):                                      
+      160 +    """Честная заглушка: раздел есть в UI, но бэкенд-ручка ещё
+          + не реализована."""                                           
+      161 +    st.warning(f"🚧 **{what}** — раздел готов в UI, но бэкенд-
+          +ручка ещё не реализована "                                    
+      162 +               f"(честная заглушка, без фейковых данных).")   
+      163 +    if endpoint:                                              
+      164 +        st.caption(f"Ожидаемый эндпоинт: `{endpoint}` — сейчас
+          + возвращает TODO/пусто.")                                     
+      165 +    if note:                                                  
+      166 +        st.caption(note)                                      
+      167 +                                                              
+      168 +                                                              
+      169 +# ─────────────────────────── мелкие хелперы ─────────────────
+          +────────────────                                              
+      170 +def _now() -> str:                                            
+      171 +    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-
+          +%d %H:%M:%S UTC")                                             
+      172 +                                                              
+      173 +                                                              
+      174  def _rerun():
+       42 -    (getattr(st, "rerun", None) or st.experimental_rerun)()   
+      175 +    fn = getattr(st, "rerun", None) or getattr(st, "experiment
+          +al_rerun", None)                                              
+      176 +    if fn:                                                    
+      177 +        fn()                                                  
+      178  
+      179  
+       45 -def _logout():                                                
+       46 -    for k in ("token", "username", "roles"):                  
+       47 -        st.session_state.pop(k, None)                         
+      180 +def _goto(page, **pending):                                   
+      181 +    st.session_state["_nav_request"] = page                   
+      182 +    if pending:                                               
+      183 +        st.session_state["_pending_state"] = pending          
+      184      _rerun()
+      185  
+      186  
+       51 -# ---- экран входа / регистрации -----------------------------
+          ------------------                                             
+      187 +def _roles() -> list[str]:                                    
+      188 +    return st.session_state.get("roles", []) or []            
+      189 +                                                              
+      190 +                                                              
+      191 +def _role() -> str:                                           
+      192 +    r = _roles()                                              
+      193 +    return r[0] if r else "—"                                 
+      194 +                                                              
+      195 +                                                              
+      196 +def _has(*roles) -> bool:                                     
+      197 +    return bool(set(roles) & set(_roles()))                   
+      198 +                                                              
+      199 +                                                              
+      200 +def _clearance() -> int:                                      
+      201 +    return max((ROLE_LEVEL.get(r, 0) for r in _roles()), defau
+          +lt=0)                                                         
+      202 +                                                              
+      203 +                                                              
+      204 +_KIND = {"ok": "ok", "available": "ok", "prod": "ok", "product
+          +ion": "ok", "closed": "ok",                                   
+      205 +         "pass": "ok", "success": "ok", "approved": "ok", "pas
+          +sed": "ok",                                                   
+      206 +         "blocked": "bad", "fail": "bad", "failed": "bad", "op
+          +en": "bad", "error": "bad",                                   
+      207 +         "pending": "warn", "pending_hitl": "warn", "running":
+          + "warn", "queued": "warn",                                    
+      208 +         "candidate": "info", "previous": "muted", "retired": 
+          +"muted", "fp": "muted",                                       
+      209 +         "false_positive": "muted", "skip": "muted", "skipped"
+          +: "muted", "none": "muted",                                   
+      210 +         "private": "muted", "shared": "ok"}                  
+      211 +                                                              
+      212 +                                                              
+      213 +def _kind(s):                                                 
+      214 +    return _KIND.get(str(s).lower(), "muted")                 
+      215 +                                                              
+      216 +                                                              
+      217 +def _pill(text, kind="muted"):                                
+      218 +    return f"<span class='pill pill-{kind}'>{text}</span>"    
+      219 +                                                              
+      220 +                                                              
+      221 +def _spill(status):                                           
+      222 +    return _pill(str(status).replace("_", " ").upper(), _kind(
+          +status))                                                      
+      223 +                                                              
+      224 +                                                              
+      225 +def _tpill(tier):                                             
+      226 +    k = {"HIGH": "bad", "MED": "warn", "LOW": "ok"}.get(str(ti
+          +er).upper(), "muted")                                         
+      227 +    return _pill(str(tier).upper(), k)                        
+      228 +                                                              
+      229 +                                                              
+      230 +def _sevpill(sev):                                            
+      231 +    k = {"critical": "bad", "high": "bad", "medium": "warn", "
+          +low": "info"}.get(str(sev).lower(), "muted")                  
+      232 +    return _pill(str(sev).upper(), k)                         
+      233 +                                                              
+      234 +                                                              
+      235 +def _sel(event):                                              
+      236 +    try:                                                      
+      237 +        rows = event.selection["rows"]                        
+      238 +    except Exception:  # noqa: BLE001                         
+      239 +        rows = getattr(getattr(event, "selection", None), "row
+          +s", []) or []                                                 
+      240 +    return rows[0] if rows else None                          
+      241 +                                                              
+      242 +                                                              
+      243 +def _share_badge(a: dict) -> str:                             
+      244 +    if a.get("share_status") != "shared":                     
+      245 +        return "🔒 приватный"                                 
+      246 +    if a.get("share_roles"):                                  
+      247 +        return f"🔗 роли: {', '.join(a['share_roles'])}"      
+      248 +    return f"🔗 клиренс ≥ {a.get('share_level')}"             
+      249 +                                                              
+      250 +                                                              
+      251 +# ──────────────────────────── ЭКРАН ВХОДА ───────────────────
+          +────────────────                                              
+      252  def render_login():
+       53 -    st.title("🛡️ MLSecOps Platform")                          
+       54 -    st.caption(f"Backend: {API}")                             
+      253 +    inject_css()                                              
+      254 +    st.markdown("<h1>🛡️ MLSecOps Platform</h1>", unsafe_allow_
+          +html=True)                                                    
+      255 +    st.caption(f"Backend: {API} · вход только по реальному акк
+          +аунту (JWT + RBAC)")                                          
+      256  
+      257      tab_login, tab_reg = st.tabs(["🔑 Вход", "📝 Регистрация"]
+           )
+      258  
+     ...
+      263              submitted = st.form_submit_button("Войти")
+      264          if submitted:
+      265              try:
+       65 -                r = api_post("/api/v1/auth/login", json={"user
+          -name": u, "password": p})                                     
+       66 -            except Exception as e:                            
+      266 +                r = api_post("/api/v1/auth/login", json={"user
+          +name": u, "password": p}, timeout=10)                         
+      267 +            except Exception as e:  # noqa: BLE001            
+      268                  st.error(f"Бэкенд недоступен ({API}): {e}")
+      269                  return
+      270              if r.status_code == 200:
+     ...
+      277                  st.error(f"Не удалось войти: {r.json().get('de
+           tail', r.text)}")
+      278  
+      279      with tab_reg:
+       79 -        st.info("После регистрации роль выдаёт MLSecOps — сраз
+          -у действий не будет.")                                        
+      280 +        st.info("После регистрации роль выдаёт MLSecOps — сраз
+          +у привилегированных действий не будет.")                      
+      281          with st.form("reg_form"):
+      282              u = st.text_input("Логин", key="reg_u")
+      283              e = st.text_input("Email (необязательно)", key="re
+           g_e")
+     ...
+      286          if submitted:
+      287              try:
+      288                  r = api_post("/api/v1/auth/register",
+       88 -                             json={"username": u, "password": 
+          -p, "email": e or None})                                       
+       89 -            except Exception as ex:                           
+      289 +                             json={"username": u, "password": 
+          +p, "email": e or None}, timeout=10)                           
+      290 +            except Exception as ex:  # noqa: BLE001           
+      291                  st.error(f"Бэкенд недоступен ({API}): {ex}")
+      292                  return
+      293              if r.status_code == 200:
+     ...
+      297                  st.error(f"Ошибка регистрации: {r.json().get('
+           detail', r.text)}")
+      298  
+      299  
+       99 -# ---- вкладки личного кабинета ------------------------------
+          ------------------                                             
+      100 -def tab_cabinet(roles: list[str]):                            
+      300 +# ─────────────────────────────── ДАШБОРД ────────────────────
+          +────────────────                                              
+      301 +def page_dashboard():                                         
+      302 +    models = get_json("/api/v1/models", {}).get("models", []) 
+          +if True else []                                               
+      303 +    events = get_json("/api/v1/events?limit=100", {}).get("eve
+          +nts", [])                                                     
+      304 +    findings = get_json("/api/v1/findings", {}).get("findings"
+          +, [])                                                         
+      305 +                                                              
+      306 +    if _has("CEO") and not _has("MLSecOps"):                  
+      307 +        st.caption("Статус защищённости (read-only для CEO)") 
+      308 +        c = st.columns(3)                                     
+      309 +        c[0].metric("Моделей в реестре", len(models))         
+      310 +        c[1].metric("Событий (Audit Trail)", len(events))     
+      311 +        c[2].metric("Открытых находок", len([f for f in findin
+          +gs if f.get("status") == "open"]))                            
+      312 +        chain = get_json("/api/v1/events/verify_chain", {})   
+      313 +        if chain.get("ok"):                                   
+      314 +            st.success(f"Audit Trail цел: цепочка из {chain.ge
+          +t('count', 0)} событий валидна.")                             
+      315 +        else:                                                 
+      316 +            st.info("Статус целостности Audit Trail недоступен
+          +.")                                                           
+      317 +        return                                                
+      318 +                                                              
+      319 +    st.caption("Сводка из реального бэкенда. Кликни карточку —
+          + перейдёшь к разделу.")                                       
+      320 +    n_models, n_events = len(models), len(events)             
+      321 +    n_find = len([f for f in findings if f.get("status") == "o
+          +pen"])                                                        
+      322 +    cards = [("Моделей в реестре", n_models, "info", "Реестр",
+          + {}),                                                         
+      323 +             ("Открытых находок", n_find, "bad" if n_find else
+          + "ok", "Находки", {}),                                        
+      324 +             ("Событий в истории", n_events, "ok", "История", 
+          +{}),                                                          
+      325 +             ("Мой клиренс", _clearance(), "info", "Кабинет", 
+          +{})]                                                          
+      326 +    cols = st.columns(4)                                      
+      327 +    for col, (label, val, kind, page, pend) in zip(cols, cards
+          +):                                                            
+      328 +        with col:                                             
+      329 +            st.markdown(                                      
+      330 +                f"<div class='card {kind}'><div class='s'>{lab
+          +el}</div>"                                                    
+      331 +                f"<div style='font-size:2rem;font-weight:800'>
+          +{val}</div></div>",                                           
+      332 +                unsafe_allow_html=True)                       
+      333 +            if st.button("Открыть →", key=f"dash_{label}", use
+          +_container_width=True):                                       
+      334 +                _goto(page, **pend)                           
+      335 +                                                              
+      336 +    st.markdown("### Мониторинг рантайма (G6 / G7)")          
+      337 +    _not_implemented("Дрейф (PSI), статистика 429/422, pass-ra
+          +te гейтов",                                                   
+      338 +                     note="Эти метрики считает рантайм-слой C 
+          +(monitor.py / serve) и пишет в "                              
+      339 +                          "logs/inference_*.jsonl. В бэкенд A 
+          +они пока не прокинуты "                                       
+      340 +                          "(нет ручки агрегации метрик).")    
+      341 +                                                              
+      342 +                                                              
+      343 +# ─────────────────────────────── КАБИНЕТ ────────────────────
+          +────────────────                                              
+      344 +def page_cabinet():                                           
+      345      st.subheader("Личный кабинет")
+      102 -    me = api_get("/api/v1/auth/me")                           
+      103 -    if me.status_code == 200:                                 
+      104 -        info = me.json()                                      
+      105 -        st.write(f"**Пользователь:** `{info['username']}`")   
+      106 -        st.write(f"**Роли:** {', '.join(info['roles']) if info
+          -['roles'] else '— (ожидайте назначения)'}")                   
+      107 -    st.divider()                                              
+      346 +    me = get_json("/api/v1/auth/me", {})                      
+      347 +    st.write(f"**Пользователь:** `{me.get('username', st.sessi
+          +on_state.get('username','?'))}`")                             
+      348 +    rs = me.get("roles") or _roles()                          
+      349 +    st.write(f"**Роли:** {', '.join(rs) if rs else '— (ожидайт
+          +е назначения от MLSecOps)'}")                                 
+      350 +    st.write(f"**Клиренс:** {_clearance()}")                  
+      351 +                                                              
+      352      st.markdown("#### 🔗 Доступ к MLflow из ноутбука")
+      353      st.caption("Нажми кнопку — получишь персональный токен и г
+           отовый сниппет для Jupyter.")
+      354      if st.button("Получить MLflow-токен"):
+     ...
+      359          else:
+      360              st.error(f"Ошибка: {r.json().get('detail', r.text)
+           }")
+      361  
+      118 -                                                              
+      119 -def tab_scanners():                                           
+      120 -    st.subheader("Инструменты / Сканеры")                     
+      121 -                                                              
+      122 -    def _run_gate(check_type: str, target: str):              
+      123 -        with st.spinner(f"Запускаю {check_type}..."):         
+      124 -            try:                                              
+      125 -                resp = api_post("/api/v1/ci/trigger",         
+      126 -                                json={"check_type": check_type
+          -, "target": target}, timeout=120)                             
+      127 -                data = resp.json()                            
+      128 -            except Exception as e:                            
+      129 -                st.error(f"Не удалось подключиться к бэкенду: 
+          -{e}")                                                         
+      130 -                return                                        
+      131 -        if data.get("status") != "ok":                        
+      132 -            st.error(f"Ошибка: {data.get('detail', resp.text)}
+          -")                                                            
+      133 -            return                                            
+      134 -        if data.get("mode") == "github_actions":              
+      135 -            repo = data.get("repo", "")                       
+      136 -            st.success("✅ Workflow запущен в GitHub Actions!"
+          -)                                                             
+      137 -            if repo:                                          
+      138 -                st.markdown(f"[Открыть GitHub Actions →](https
+          -://github.com/{repo}/actions)")                               
+      139 -            return                                            
+      140 -        report = data["report"]                               
+      141 -        if report.get("passed", False):                       
+      142 -            st.success(f"✅ {check_type.upper()} — PASS")     
+      143 -        else:                                                 
+      144 -            st.error(f"❌ {check_type.upper()} — FAIL: {report
+          -.get('failed_checks', [])}")                                  
+      145 -        for check in report.get("checks", []):                
+      146 -            label = f"**{check['check']}** — {check['detail']}
+          -"                                                             
+      147 -            if check["status"] == "PASS":                     
+      148 -                st.success(label)                             
+      149 -            elif check["status"] == "FAIL":                   
+      150 -                st.error(label)                               
+      151 -            else:                                             
+      152 -                st.warning(f"⚠️ {label} (SKIP)")              
+      153 -                                                              
+      154 -    with st.expander("🗂 G1 — Data Gate (схема, PII, баланс кла
+          -ссов)", expanded=True):                                       
+      155 -        csv_files = []                                        
+      156 -        try:                                                  
+      157 -            csv_files = api_get("/api/v1/files", timeout=5).js
+          -on().get("files", [])                                         
+      158 -        except Exception:                                     
+      159 -            pass                                              
+      160 -        if not csv_files:                                     
+      161 -            csv_files = ["data/train_m1_clean.csv"]           
+      162 -        target_ds = st.selectbox("Файл для проверки", csv_file
+          -s, key="ds_select")                                           
+      163 -        if st.button("Запустить Data Gate", key="btn_data"):  
+      164 -            _run_gate("data_gate", target_ds)                 
+      165 -                                                              
+      166 -    with st.expander("🔍 G2 — Code Gate (секреты, SAST, CVE)")
+          -:                                                             
+      167 -        if st.button("Запустить Code Gate", key="btn_code"):  
+      168 -            _run_gate("code_gate", ".")                       
+      169 -                                                              
+      170 -    with st.expander("📦 G3 — Dependency Gate (allow-list, пин
+          -нинг)"):                                                      
+      171 -        if st.button("Запустить Dependency Gate", key="btn_dep
+          -"):                                                           
+      172 -            _run_gate("dependency_gate", ".")                 
+      173 -                                                              
+      174 -    st.divider()                                              
+      175 -    st.markdown("#### Загрузить свой CSV")                    
+      176 -    uploaded = st.file_uploader("CSV-файл", type=["csv"])     
+      177 -    if uploaded is not None and st.button("Загрузить на сервер
+          -", key="btn_upload"):                                         
+      178 -        try:                                                  
+      179 -            resp = api_post("/api/v1/upload",                 
+      180 -                            files={"file": (uploaded.name, upl
+          -oaded.getvalue(), "text/csv")},                               
+      181 -                            timeout=30)                       
+      182 -            data = resp.json()                                
+      183 -            if data.get("status") == "ok":                    
+      184 -                st.success(f"Загружен: {data['filename']} ({da
+          -ta['size']} б). Обнови (F5).")                                
+      185 -            else:                                             
+      186 -                st.error(f"Ошибка: {data.get('detail', '')}") 
+      187 -        except Exception as e:                                
+      188 -            st.error(f"Ошибка загрузки: {e}")                 
+      189 -                                                              
+      190 -                                                              
+      191 -def tab_mlflow():                                             
+      192 -    st.subheader("MLflow раны")                               
+      193 -    st.caption("Эксперименты и раны из MLflow (то, что разрабо
+          -тчики залогировали через прокси).")                           
+      194 -    mlflow_ui = os.getenv("MLFLOW_UI_URL", "http://localhost:5
+          -000")                                                         
+      195 -    st.markdown(f"🔗 [Открыть MLflow UI напрямую →]({mlflow_ui
+          -})")                                                          
+      362 +    st.markdown("#### 🧪 Последние MLflow раны")              
+      363 +    st.markdown(f"🔗 [Открыть MLflow UI напрямую →]({MLFLOW_UI
+          +_URL})")                                                      
+      364      try:
+      197 -        runs = api_get("/api/v1/mlflow/runs?limit=50").json().
+          -get("runs", [])                                               
+      198 -    except Exception as e:                                    
+      365 +        runs = api_get("/api/v1/mlflow/runs?limit=50", timeout
+          +=30).json().get("runs", [])                                   
+      366 +    except Exception as e:  # noqa: BLE001                    
+      367          st.error(f"Не удалось получить раны: {e}")
+      368          return
+      369      if not runs:
+      202 -        st.info("Ранов пока нет. Залогируй что-нибудь через мо
+          -к-скрипт examples/dev_train_mock.py.")                        
+      370 +        st.info("Ранов пока нет. Залогируй что-нибудь через но
+          +утбук "                                                       
+      371 +                "(см. examples/dev_train_mock.py).")          
+      372          return
+      204 -    import datetime as _dt                                    
+      373      rows = []
+      374      for r in runs:
+      375          ts = r.get("start_time")
+      376          when = _dt.datetime.fromtimestamp(ts / 1000).strftime(
+           "%Y-%m-%d %H:%M") if ts else ""
+      377          rows.append({
+      210 -            "experiment": r["experiment"], "run": r.get("run_n
+          -ame") or r["run_id"][:8],                                     
+      211 -            "user": r.get("user"), "status": r.get("status"), 
+          -"when": when,                                                 
+      378 +            "experiment": r.get("experiment"), "run": r.get("r
+          +un_name") or r["run_id"][:8],                                 
+      379 +            "owner": r.get("owner"), "status": r.get("status")
+          +, "when": when,                                               
+      380              "metrics": ", ".join(f"{k}={v}" for k, v in r.get(
+           "metrics", {}).items()),
+      381          })
+      382      st.dataframe(rows, use_container_width=True, hide_index=Tr
+           ue)
+      383  
+      384  
+      217 -def _share_badge(a: dict) -> str:                             
+      218 -    if a.get("share_status") != "shared":                     
+      219 -        return "🔒 приватный"                                 
+      220 -    if a.get("share_roles"):                                  
+      221 -        return f"🔗 роли: {', '.join(a['share_roles'])}"      
+      222 -    return f"🔗 клиренс ≥ {a.get('share_level')}"             
+      223 -                                                              
+      224 -                                                              
+      225 -def tab_artifacts():                                          
+      385 +# ─────────────────────────────── МОИ АРТЕФАКТЫ ──────────────
+          +────────────────                                              
+      386 +def page_artifacts():                                         
+      387      st.subheader("Мои артефакты (сессии разработки MLflow)")
+      388      st.caption("Каждый ран = сессия (data+код+модель). По умол
+           чанию приватен. Чтобы расшарить — "
+      228 -               "сначала пройди security check, затем выбери ви
+          -димость.")                                                    
+      389 +               "сначала пройди security check, затем выбери ви
+          +димость (по клиренсу или ролям).")                            
+      390      try:
+      230 -        data = api_get("/api/v1/artifacts?", timeout=30).json(
+          -)                                                             
+      231 -    except Exception as e:                                    
+      391 +        data = api_get("/api/v1/artifacts", timeout=30).json()
+      392 +    except Exception as e:  # noqa: BLE001                    
+      393          st.error(f"Не удалось получить артефакты: {e}")
+      394          return
+      395      mine = data.get("mine", [])
+     ...
+      434                  if a.get("check_status") != "passed":
+      435                      st.caption("Шаринг откроется после успешно
+           й проверки.")
+      436              with c3:
+      276 -                if a.get("share_status") == "shared" and st.bu
+          -tton("🔒 Снять шаринг",                                       
+      277 -                                                              
+          -     key=f"uns_{rid}"):                                       
+      437 +                if a.get("share_status") == "shared" and st.bu
+          +tton("🔒 Снять шаринг", key=f"uns_{rid}"):                    
+      438                      r = api_post(f"/api/v1/artifacts/{rid}/uns
+           hare")
+      439                      if r.status_code == 200:
+      440                          st.info("Снова приватный.")
+     ...
+      455          )
+      456  
+      457  
+      298 -def tab_events():                                             
+      299 -    st.subheader("История событий (Audit Trail)")             
+      300 -    st.caption("Цепочка событий с hash-chain (актор = серверна
+          -я личность из токена).")                                      
+      301 -    try:                                                      
+      302 -        events = api_get("/api/v1/events?limit=100").json().ge
+          -t("events", [])                                               
+      303 -    except Exception as e:                                    
+      304 -        st.error(f"Не удалось получить события: {e}")         
+      458 +# ──────────────────────── ВЕРИФИКАЦИЯ / РАННЕР ГЕЙТОВ ───────
+          +─────────────────                                             
+      459 +def page_verify():                                            
+      460 +    tabs = st.tabs(["Верификация модели", "Раннер гейтов (MLSe
+          +cOps)"])                                                      
+      461 +                                                              
+      462 +    with tabs[0]:                                             
+      463 +        st.caption("Отправить ран MLflow на deep-verify (G5+G2
+          ++G3 → обучение в CI → G4).")                                  
+      464 +        with st.form("verify_form"):                          
+      465 +            c1, c2 = st.columns(2)                            
+      466 +            model = c1.text_input("Имя модели", "credit_scorin
+          +g")                                                           
+      467 +            run_id = c1.text_input("MLflow Run ID")           
+      468 +            git_sha = c2.text_input("Git SHA", "a1b2c3d4")    
+      469 +            reason = st.text_area("Причина (обязательно — пише
+          +тся в Audit Trail)", height=70)                               
+      470 +            ok = st.form_submit_button("Запустить верификацию"
+          +)                                                             
+      471 +        if ok:                                                
+      472 +            if not reason.strip():                            
+      473 +                st.error("Причина обязательна (Audit Trail).")
+      474 +            elif not run_id.strip():                          
+      475 +                st.error("Укажи MLflow Run ID.")              
+      476 +            else:                                             
+      477 +                resp = api_post("/api/v1/verify", json={      
+      478 +                    "model_name": model, "run_id": run_id, "gi
+          +t_sha": git_sha,                                              
+      479 +                    "requested_by": st.session_state.get("user
+          +name", ""), "reason": reason})                                
+      480 +                if resp.status_code == 200:                   
+      481 +                    body = resp.json()                        
+      482 +                    if body.get("status") == "TODO" or body.ge
+          +t("passed") is None:                                          
+      483 +                        st.warning("🚧 Бэкенд принял запрос, н
+          +о deep-verify ещё не реализован "                             
+      484 +                                   "(ручка `/api/v1/verify` — 
+          +заглушка).")                                                  
+      485 +                        st.json(body)                         
+      486 +                    else:                                     
+      487 +                        (st.success if body.get("passed") else
+          + st.error)("Верификация завершена")                           
+      488 +                        for gr in body.get("gate_results", [])
+          +:                                                             
+      489 +                            st.markdown(                      
+      490 +                                f"{_pill('PASS' if gr['passed'
+          +] else 'FAIL', 'ok' if gr['passed'] else 'bad')}"             
+      491 +                                f" &nbsp; {gr['gate']}", unsaf
+          +e_allow_html=True)                                            
+      492 +                else:                                         
+      493 +                    st.error(f"{resp.status_code}: {resp.text}
+          +")                                                            
+      494 +        st.caption("Чтобы реально прогнать отдельные гейты сей
+          +час — раздел «Инструменты».")                                 
+      495 +                                                              
+      496 +    with tabs[1]:                                             
+      497 +        if not _has("MLSecOps"):                              
+      498 +            st.warning("Раннер гейтов доступен только роли MLS
+          +ecOps.")                                                      
+      499 +            return                                            
+      500 +        _not_implemented("Матричный раннер гейтов (гейты × рес
+          +урсы)",                                                       
+      501 +                         endpoint="/api/v1/scan",             
+      502 +                         note="Покнопочный запуск отдельных ге
+          +йтов уже работает в разделе "                                 
+      503 +                              "«Инструменты» (через /api/v1/ci
+          +/trigger).")                                                  
+      504 +                                                              
+      505 +                                                              
+      506 +# ─────────────────────────────── РЕЕСТР ─────────────────────
+          +────────────────                                              
+      507 +def page_registry():                                          
+      508 +    st.caption("Модели из MLflow Model Registry (реальный бэке
+          +нд).")                                                        
+      509 +    models = get_json("/api/v1/models", {}).get("models", []) 
+      510 +    if not models:                                            
+      511 +        st.info("Реестр пуст — зарегистрированных моделей нет.
+          + Модели попадают сюда после "                                 
+      512 +                "прохождения security-гейтов и регистрации (ру
+          +чка реестра — в разработке).")                                
+      513          return
+      514 +    rows = []                                                 
+      515 +    for m in models:                                          
+      516 +        if isinstance(m, dict):                               
+      517 +            rows.append({"модель": m.get("name", "?"),        
+      518 +                         "версии": ", ".join(str(v) for v in m
+          +.get("latest_versions", [])) or "—"})                         
+      519 +        else:                                                 
+      520 +            rows.append({"модель": str(m), "версии": "—"})    
+      521 +    st.dataframe(rows, use_container_width=True, hide_index=Tr
+          +ue)                                                           
+      522 +    st.caption("Детальный паспорт/lineage/Tier появятся, когда
+          + будут реализованы ручки "                                    
+      523 +               "`/api/v1/models/{name}/versions` и реестр в БД
+          + (сейчас — заглушки).")                                       
+      524 +                                                              
+      525 +                                                              
+      526 +# ─────────────────────────────── ПАСПОРТ ────────────────────
+          +────────────────                                              
+      527 +def page_passport():                                          
+      528 +    models = get_json("/api/v1/models", {}).get("models", []) 
+      529 +    names = [m.get("name") if isinstance(m, dict) else str(m) 
+          +for m in models]                                              
+      530 +    if not names:                                             
+      531 +        st.info("Нет моделей в реестре — паспорт показывать не
+          + для чего.")                                                  
+      532 +        return                                                
+      533 +    st.selectbox("Модель", names, key="passport_sel")         
+      534 +    _not_implemented("Паспорт модели (Tier, lineage, проверки,
+          + версии, история)",                                           
+      535 +                     endpoint="/api/v1/models/{name}/versions,
+          + /api/v1/datasets/{key}",                                     
+      536 +                     note="Имена моделей берём из MLflow Regis
+          +try, но детальный паспорт "                                   
+      537 +                          "(версии/датасеты/гейты) требует руч
+          +ек реестра — они пока заглушки.")                             
+      538 +                                                              
+      539 +                                                              
+      540 +# ─────────────────────────────── ИСТОРИЯ ────────────────────
+          +────────────────                                              
+      541 +def page_events():                                            
+      542 +    st.caption("Цепочка событий с hash-chain (актор = серверна
+          +я личность из токена).")                                      
+      543 +    c1, c2 = st.columns([3, 1])                               
+      544 +    f_asset = c1.text_input("Фильтр по активу", key="flt_ev_as
+          +set")                                                         
+      545 +    if c2.button("Проверить цепочку хешей", use_container_widt
+          +h=True):                                                      
+      546 +        r = get_json("/api/v1/events/verify_chain", {})       
+      547 +        if r.get("ok"):                                       
+      548 +            st.success(f"Цепочка валидна ({r.get('count', 0)} 
+          +событий).")                                                   
+      549 +        elif r:                                               
+      550 +            st.error(f"Разрыв цепочки на событии id={r.get('br
+          +oken_at')}.")                                                 
+      551 +        else:                                                 
+      552 +            st.error("Не удалось проверить цепочку (бэкенд нед
+          +оступен).")                                                   
+      553 +                                                              
+      554 +    raw = get_json("/api/v1/events?limit=100", {}).get("events
+          +", [])                                                        
+      555 +    # Адаптер имён полей бэкенда (action/reason/details) → ожи
+          +даемые UI (type/detail).                                      
+      556 +    events = []                                               
+      557 +    for e in raw:                                             
+      558 +        detail = e.get("reason")                              
+      559 +        if not detail and e.get("details"):                   
+      560 +            detail = json.dumps(e["details"], ensure_ascii=Fal
+          +se)                                                           
+      561 +        events.append({"id": e.get("id"), "ts": e.get("ts") or
+          + "", "type": e.get("action"),                                 
+      562 +                       "actor": e.get("actor"), "role": e.get(
+          +"role"),                                                      
+      563 +                       "asset": e.get("asset") or "—", "result
+          +": e.get("result") or "ok",                                   
+      564 +                       "detail": detail or ""})               
+      565 +    if f_asset:                                               
+      566 +        events = [e for e in events if f_asset.lower() in str(
+          +e.get("asset", "")).lower()]                                  
+      567      if not events:
+      568          st.info("Событий пока нет.")
+      569          return
+      570 +                                                              
+      571 +    icon = {"ok": "●", "blocked": "■", "error": "▲", "pending"
+          +: "◆"}                                                        
+      572 +    for e in events:  # бэкенд уже отдаёт новые сверху        
+      573 +        k = _kind(e["result"])                                
+      574 +        clr = "ok" if k == "ok" else "bad" if k == "bad" else 
+          +"warn"                                                        
+      575 +        st.markdown(                                          
+      576 +            f"<div class='card {k}'><div class='h'>"          
+      577 +            f"<span style='color:var(--{clr})'>{icon.get(e['re
+          +sult'], '●')}</span> "                                        
+      578 +            f"{e['type']} &nbsp; {_spill(e['result'])}</div>" 
+      579 +            f"<div class='s'><span class='mono'>{str(e['ts'])[
+          +:19]}</span> · "                                              
+      580 +            f"{e['actor']}/{e.get('role') or '—'} · актив <spa
+          +n class='mono'>{e['asset']}</span></div>"                     
+      581 +            f"<div style='margin-top:.25rem'>{e['detail']}</di
+          +v></div>",                                                    
+      582 +            unsafe_allow_html=True)                           
+      583 +                                                              
+      584 +                                                              
+      585 +# ─────────────────────────────── НАХОДКИ ────────────────────
+          +────────────────                                              
+      586 +def page_findings():                                          
+      587 +    c1, c2, c3 = st.columns(3)                                
+      588 +    c1.multiselect("Гейт", ["G1", "G2", "G3", "G4", "G5", "G6"
+          +, "G7"], key="flt_find_gate")                                 
+      589 +    c2.multiselect("Severity", ["critical", "high", "medium", 
+          +"low"], key="flt_find_sev")                                   
+      590 +    c3.multiselect("Статус", ["open", "closed", "fp"], key="fl
+          +t_find_status")                                               
+      591 +                                                              
+      592 +    data = get_json("/api/v1/findings", {}).get("findings", []
+          +)                                                             
+      593 +    if not data:                                              
+      594 +        _not_implemented("Журнал находок (сработки гейтов: при
+          +чина/evidence/FP/перезапуск)",                                
+      595 +                         endpoint="/api/v1/findings",         
+      596 +                         note="Гейты уже умеют отдавать eviden
+          +ce (см. «Инструменты»), но запись "                           
+      597 +                              "находок в БД (db.add_finding) и
+          + выдача `/api/v1/findings` — в разработке.")                  
+      598 +        return                                                
+      599 +    rows = [{"sev": str(f.get("severity", "")).upper(), "гейт"
+          +: f.get("gate"),                                              
+      600 +             "проверка": f.get("check") or f.get("rule"), "ста
+          +тус": str(f.get("status", "")).upper(),                       
+      601 +             "актив": f.get("asset"), "когда": str(f.get("ts",
+          + ""))[11:19]} for f in data]                                  
+      602 +    st.dataframe(rows, use_container_width=True, hide_index=Tr
+          +ue)                                                           
+      603 +                                                              
+      604 +                                                              
+      605 +# ─────────────────────────────── CI/CD ЛОГИ ─────────────────
+          +────────────────                                              
+      606 +def page_cicd():                                              
+      607 +    if not _has("MLSecOps"):                                  
+      608 +        st.warning("Логи CI/CD доступны только роли MLSecOps."
+          +)                                                             
+      609 +        return                                                
+      610 +    _not_implemented("Просмотр прогонов CI/CD (jobs/steps/логи
+          +)",                                                           
+      611 +                     endpoint="/api/v1/cicd/runs",            
+      612 +                     note="Запуск гейтов в GitHub Actions УЖЕ 
+          +работает через "                                              
+      613 +                          "/api/v1/ci/trigger (см. «Инструмент
+          +ы»), но retrieval статусов "                                  
+      614 +                          "и логов прогонов обратно в UI пока 
+          +не реализован.")                                              
+      615 +    repo = os.getenv("GITHUB_REPO", "")                       
+      616 +    if repo:                                                  
+      617 +        st.markdown(f"🔗 [Открыть GitHub Actions →](https://gi
+          +thub.com/{repo}/actions)")                                    
+      618 +                                                              
+      619 +                                                              
+      620 +# ─────────────────────────────── ИНСТРУМЕНТЫ ────────────────
+          +────────────────                                              
+      621 +def page_scanners():                                          
+      622 +    st.caption("Запуск отдельных security-гейтов на реальных а
+          +ртефактах (через /api/v1/ci/trigger).")                       
+      623 +                                                              
+      624 +    def _run_gate(check_type: str, target: str):              
+      625 +        with st.spinner(f"Запускаю {check_type}..."):         
+      626 +            try:                                              
+      627 +                resp = api_post("/api/v1/ci/trigger",         
+      628 +                                json={"check_type": check_type
+          +, "target": target}, timeout=120)                             
+      629 +                data = resp.json()                            
+      630 +            except Exception as e:  # noqa: BLE001            
+      631 +                st.error(f"Не удалось подключиться к бэкенду: 
+          +{e}")                                                         
+      632 +                return                                        
+      633 +        if resp.status_code != 200 or data.get("status") != "o
+          +k":                                                           
+      634 +            st.error(f"Ошибка: {data.get('detail', resp.text)}
+          +")                                                            
+      635 +            return                                            
+      636 +        if data.get("mode") == "github_actions":              
+      637 +            repo = data.get("repo", "")                       
+      638 +            st.success("✅ Workflow запущен в GitHub Actions!"
+          +)                                                             
+      639 +            if repo:                                          
+      640 +                st.markdown(f"[Открыть GitHub Actions →](https
+          +://github.com/{repo}/actions)")                               
+      641 +            return                                            
+      642 +        report = data["report"]                               
+      643 +        if report.get("passed", False):                       
+      644 +            st.success(f"✅ {check_type.upper()} — PASS")     
+      645 +        else:                                                 
+      646 +            st.error(f"❌ {check_type.upper()} — FAIL: {report
+          +.get('failed_checks', [])}")                                  
+      647 +        for check in report.get("checks", []):                
+      648 +            label = f"**{check['check']}** — {check['detail']}
+          +"                                                             
+      649 +            if check["status"] == "PASS":                     
+      650 +                st.success(label)                             
+      651 +            elif check["status"] == "FAIL":                   
+      652 +                st.error(label)                               
+      653 +            else:                                             
+      654 +                st.warning(f"⚠️ {label} (SKIP)")              
+      655 +                                                              
+      656 +    with st.expander("🗂 G1 — Data Gate (схема, PII, баланс кла
+          +ссов)", expanded=True):                                       
+      657 +        csv_files = []                                        
+      658 +        try:                                                  
+      659 +            csv_files = api_get("/api/v1/files", timeout=5).js
+          +on().get("files", [])                                         
+      660 +        except Exception:  # noqa: BLE001                     
+      661 +            pass                                              
+      662 +        if not csv_files:                                     
+      663 +            csv_files = ["data/train_m1_clean.csv"]           
+      664 +        target_ds = st.selectbox("Файл для проверки", csv_file
+          +s, key="ds_select")                                           
+      665 +        if st.button("Запустить Data Gate", key="btn_data"):  
+      666 +            _run_gate("data_gate", target_ds)                 
+      667 +                                                              
+      668 +    with st.expander("🔍 G2 — Code Gate (секреты, SAST, CVE)")
+          +:                                                             
+      669 +        if st.button("Запустить Code Gate", key="btn_code"):  
+      670 +            _run_gate("code_gate", ".")                       
+      671 +                                                              
+      672 +    with st.expander("📦 G3 — Dependency Gate (allow-list, пин
+          +нинг)"):                                                      
+      673 +        if st.button("Запустить Dependency Gate", key="btn_dep
+          +"):                                                           
+      674 +            _run_gate("dependency_gate", ".")                 
+      675 +                                                              
+      676 +    st.divider()                                              
+      677 +    st.markdown("#### Загрузить свой CSV")                    
+      678 +    uploaded = st.file_uploader("CSV-файл", type=["csv"])     
+      679 +    if uploaded is not None and st.button("Загрузить на сервер
+          +", key="btn_upload"):                                         
+      680 +        try:                                                  
+      681 +            resp = api_post("/api/v1/upload",                 
+      682 +                            files={"file": (uploaded.name, upl
+          +oaded.getvalue(), "text/csv")},                               
+      683 +                            timeout=30)                       
+      684 +            data = resp.json()                                
+      685 +            if data.get("status") == "ok":                    
+      686 +                st.success(f"Загружен: {data['filename']} ({da
+          +ta['size']} б). Обнови (F5).")                                
+      687 +            else:                                             
+      688 +                st.error(f"Ошибка: {data.get('detail', '')}") 
+      689 +        except Exception as e:  # noqa: BLE001                
+      690 +            st.error(f"Ошибка загрузки: {e}")                 
+      691 +                                                              
+      692 +    st.divider()                                              
+      693 +    st.markdown("#### Карта инструментов → гейт → угроза (спра
+          +вочно)")                                                      
+      694 +    tools = {                                                 
+      695 +        "gitleaks": ("G2", "high", "#10 секреты"), "bandit": (
+          +"G2", "high", "#8 SAST"),                                     
+      696 +        "pip-audit": ("G2", "critical", "#8 CVE"), "trivy": ("
+          +G2", "critical", "#8 CVE образа"),                            
+      697 +        "modelscan": ("G4", "critical", "#3 pickle/RCE"), "cos
+          +ign": ("G4", "high", "#26 подпись"),                          
+      698 +        "pandas": ("G1", "high", "#1/#2 данные"), "redis": ("G
+          +7", "high", "#5/#6 rate-limit"),                              
+      699 +        "evidently": ("G6", "medium", "#14 дрейф"),           
+      700 +    }                                                         
+      701      st.dataframe(
+      310 -        [{"id": e["id"], "ts": e["ts"], "actor": e["actor"], "
+          -role": e["role"],                                             
+      311 -          "action": e["action"], "result": e["result"], "reaso
+          -n": e.get("reason")}                                          
+      312 -         for e in events],                                    
+      313 -        use_container_width=True, hide_index=True,            
+      314 -    )                                                         
+      702 +        [{"инструмент": t, "гейт": g, "severity": sev.upper(),
+          + "угроза": thr}                                               
+      703 +         for t, (g, sev, thr) in tools.items()],              
+      704 +        use_container_width=True, hide_index=True)            
+      705  
+      706  
+      317 -def tab_admin():                                              
+      318 -    st.subheader("Админка (только MLSecOps)")                 
+      707 +# ─────────────────────────────── ДЕПЛОЙ ─────────────────────
+          +────────────────                                              
+      708 +def page_deploy():                                            
+      709 +    if not _has("MLSecOps"):                                  
+      710 +        st.warning("Деплой/Approve доступен только роли MLSecO
+          +ps.")                                                         
+      711 +        return                                                
+      712 +    st.caption("Деплой в прод. Tier=HIGH требует ручного Appro
+          +ve MLSecOps (HITL).")                                         
+      713 +    models = get_json("/api/v1/models", {}).get("models", []) 
+      714 +    if not models:                                            
+      715 +        st.info("Нет моделей, ожидающих деплоя (реестр пуст)."
+          +)                                                             
+      716 +    _not_implemented("Деплой и HITL-Approve (deploy.yml, стату
+          +сы candidate/pending_hitl→prod)",                             
+      717 +                     endpoint="/api/v1/deploy/{model}/{version
+          +}, /api/v1/deploy/.../approve",                               
+      718 +                     note="Ручки деплоя/approve/rollback/retir
+          +e в бэкенде — заглушки (TODO). "                              
+      719 +                          "RBAC уже реальный: не-MLSecOps сюда
+          + не попадёт.")                                                
+      720  
+      320 -    st.markdown("#### Пользователи")                          
+      721 +                                                              
+      722 +# ─────────────────────────────── ПОЛЬЗОВАТЕЛИ ───────────────
+          +───────────────                                               
+      723 +def page_users():                                             
+      724 +    if not _has("MLSecOps"):                                  
+      725 +        st.warning("Управление пользователями доступно только 
+          +MLSecOps.")                                                   
+      726 +        return                                                
+      727 +    st.subheader("Пользователи и доступы")                    
+      728 +                                                              
+      729      r = api_get("/api/v1/admin/users")
+      730      if r.status_code == 403:
+      731          st.error("Нужна роль MLSecOps.")
+      732          return
+      733      if r.status_code == 200:
+      326 -        st.dataframe(r.json()["users"], use_container_width=Tr
+          -ue, hide_index=True)                                          
+      734 +        users = r.json().get("users", [])                     
+      735 +        rows = [{"логин": u.get("username"), "email": u.get("e
+          +mail") or "—",                                                
+      736 +                 "роли": ", ".join(u.get("roles") or []) or "—
+          + (нет роли)"} for u in users]                                 
+      737 +        st.dataframe(rows, use_container_width=True, hide_inde
+          +x=True)                                                       
+      738      else:
+      739          st.error(f"Ошибка: {r.text}")
+      740  
+     ...
+      748                  rr = api_post("/api/v1/admin/roles", json={"us
+           ername": u, "role": role})
+      749                  if rr.status_code == 200:
+      750                      st.success(f"{u}: роли теперь {rr.json()['
+           roles']}")
+      751 +                    _rerun()                                  
+      752                  else:
+      753                      st.error(rr.json().get("detail", rr.text))
+      754      with col2:
+     ...
+      763                  rr = api_post("/api/v1/admin/users", json=payl
+           oad)
+      764                  if rr.status_code == 200:
+      765                      st.success(f"Создан {u}, роли {rr.json()['
+           roles']}")
+      766 +                    _rerun()                                  
+      767                  else:
+      768                      st.error(rr.json().get("detail", rr.text))
+      769  
+     ...
+      783                  st.error(rr.json().get("detail", rr.text))
+      784  
+      785  
+      373 -# ---- основной рендер ---------------------------------------
+          ------------------                                             
+      786 +# ─────────────────────────── КАРТА ПОКРЫТИЯ (GRC) ───────────
+          +───────────────                                               
+      787 +def page_coverage():                                          
+      788 +    if CTRL is None:                                          
+      789 +        st.info("Каталог контролей недоступен (src/common/cont
+          +rols.py).")                                                   
+      790 +        return                                                
+      791 +    cov = CTRL.coverage()                                     
+      792 +    st.caption("Замкнутый контур GRC: каждая угроза → контроль
+          + → тест. Статусы: live / accepted / planned.")                
+      793 +    c = st.columns(4)                                         
+      794 +    c[0].metric("Покрытие", f"{cov['closed']}/{cov['total']}",
+          + f"{cov['pct']}%")                                            
+      795 +    c[1].metric("Live (реализовано+тест)", cov["live"])       
+      796 +    c[2].metric("Accepted (RiskAcceptance)", cov["accepted"]) 
+      797 +    c[3].metric("Planned (инфра/A)", cov["planned"])          
+      798 +    st.progress(cov["pct"] / 100)                             
+      799 +                                                              
+      800 +    if _has("CEO"):                                           
+      801 +        st.success(f"Контролей закрыто {cov['closed']}/{cov['t
+          +otal']} ({cov['pct']}%). "                                    
+      802 +                   "Остаточные риски приняты через RiskAccepta
+          +nce.")                                                        
+      803 +                                                              
+      804 +    f_layer = st.multiselect("Слой", sorted({x["layer"] for x 
+          +in CTRL.CONTROLS}), key="cov_layer")                          
+      805 +    rows = []                                                 
+      806 +    for ctl in CTRL.CONTROLS:                                 
+      807 +        if f_layer and ctl["layer"] not in f_layer:           
+      808 +            continue                                          
+      809 +        rows.append({"ID": ctl["id"], "контроль": ctl["title"]
+          +, "угрозы": " ".join(ctl["threats"]),                         
+      810 +                     "гейт/слой": f"{ctl['gate']} · {ctl['laye
+          +r']}",                                                        
+      811 +                     "статус": CTRL.effective_status(ctl).uppe
+          +r(),                                                          
+      812 +                     "тестов": len(ctl["tests"]),             
+      813 +                     "ATLAS": ctl["std"].get("ATLAS", "—"), "O
+          +WASP": ctl["std"].get("OWASP", "—"),                          
+      814 +                     "NIST": ctl["std"].get("NIST", "—"), "ФСТ
+          +ЭК": ctl["std"].get("FSTEC", "—")})                           
+      815 +    ev = st.dataframe(rows, use_container_width=True, hide_ind
+          +ex=True, on_select="rerun",                                   
+      816 +                      selection_mode="single-row", key="cov_ta
+          +ble",                                                         
+      817 +                      column_config={"ID": st.column_config.Te
+          +xtColumn(width="small"),                                      
+      818 +                                     "тестов": st.column_confi
+          +g.NumberColumn("тесты")})                                     
+      819 +    i = _sel(ev)                                              
+      820 +    if i is None:                                             
+      821 +        st.info("Выбери контроль — увидишь тесты, стандарты и 
+          +RiskAcceptance.")                                             
+      822 +        return                                                
+      823 +    ctl = [c for c in CTRL.CONTROLS if (not f_layer or c["laye
+          +r"] in f_layer)][i]                                           
+      824 +    eff = CTRL.effective_status(ctl)                          
+      825 +    st.markdown(f"## {ctl['id']} — {ctl['title']}")           
+      826 +    st.markdown(f"{_pill(eff.upper(), _kind(eff))} &nbsp; гейт
+          + <b>{ctl['gate']}</b> · слой {ctl['layer']} "                 
+      827 +                f"&nbsp; угрозы {' '.join(ctl['threats'])}", u
+          +nsafe_allow_html=True)                                        
+      828 +    st.markdown("**Тесты, покрывающие контроль:**")           
+      829 +    for t in ctl["tests"]:                                    
+      830 +        st.markdown(f"- <span class='mono'>{t}</span>", unsafe
+          +_allow_html=True)                                             
+      831 +    st.markdown("**Стандарты:** " + " · ".join(               
+      832 +        f"{k}: {v}" for k, v in ctl["std"].items() if v and v 
+          +!= "—"))                                                      
+      833 +    if eff != "live" and _has("MLSecOps"):                    
+      834 +        st.markdown("**RiskAcceptance (GRC exception):**")    
+      835 +        reason = st.text_input("Обоснование принятия остаточно
+          +го риска", key=f"ra_{ctl['id']}")                             
+      836 +        if st.button("Принять остаточный риск", key=f"rab_{ctl
+          +['id']}"):                                                    
+      837 +            if reason.strip():                                
+      838 +                # Бэкенд GRC-журнала пока нет — фиксируем лока
+          +льно для немедленного UI.                                     
+      839 +                CTRL.set_accepted(ctl["id"], st.session_state.
+          +get("username", "mlsecops"), reason)                          
+      840 +                st.success(f"{ctl['id']} → ACCEPTED (локально;
+          + персист в БД GRC — TODO).")                                  
+      841 +                _rerun()                                      
+      842 +            else:                                             
+      843 +                st.error("Обоснование обязательно")           
+      844 +                                                              
+      845 +                                                              
+      846 +# ─────────────────────────── КОНТУР (обзор) ─────────────────
+          +────────────────                                              
+      847 +def page_contour():                                           
+      848 +    if CTRL is None:                                          
+      849 +        st.info("Каталог контролей недоступен (src/common/cont
+          +rols.py).")                                                   
+      850 +        return                                                
+      851 +    st.caption("Сквозной контур: пайплайн жизненного цикла + и
+          +нфраструктура + рантайм-защиты.")                             
+      852 +    findings = get_json("/api/v1/findings", {}).get("findings"
+          +, [])                                                         
+      853 +    open_find = len([f for f in findings if f.get("status") ==
+          + "open"])                                                     
+      854 +    cov = CTRL.coverage()                                     
+      855 +    c = st.columns(4)                                         
+      856 +    c[0].metric("Состояние", "ТРЕВОГА" if open_find else "OK")
+      857 +    c[1].metric("Открытых сработок", open_find)               
+      858 +    c[2].metric("Контролей в контуре", cov["total"])          
+      859 +    c[3].metric("Покрытие", f"{cov['pct']}%")                 
+      860 +                                                              
+      861 +    st.markdown("### Рантайм-защиты периметра (каталог контрол
+          +ей)")                                                         
+      862 +    rt = [c for c in CTRL.CONTROLS if c["layer"] in ("runtime"
+          +, "infra")]                                                   
+      863 +    cols = st.columns(2)                                      
+      864 +    for i, ctl in enumerate(rt):                              
+      865 +        eff = CTRL.effective_status(ctl)                      
+      866 +        cols[i % 2].markdown(                                 
+      867 +            f"<div class='card {_kind(eff)}'><div class='h'>{_
+          +pill(ctl['id'], 'info')} &nbsp; "                             
+      868 +            f"{ctl['title']}</div><div class='s'>{eff.upper()}
+          + · угрозы {' '.join(ctl['threats'])}</div></div>",            
+      869 +            unsafe_allow_html=True)                           
+      870 +    st.caption("Статусы из каталога контролей (controls.py). Ж
+          +ивые рантайм-метрики (PSI, 429) "                             
+      871 +               "появятся, когда рантайм-слой C начнёт отдавать
+          + их в бэкенд.")                                               
+      872 +                                                              
+      873 +                                                              
+      874 +# ─────────────────────────────── NAV / RENDER ───────────────
+          +───────────────                                               
+      875 +# (page, функция, предикат видимости по ролям)                
+      876 +PAGE_DEFS = [                                                 
+      877 +    ("Дашборд", page_dashboard, lambda r: True),              
+      878 +    ("Кабинет", page_cabinet, lambda r: True),                
+      879 +    ("Мои артефакты", page_artifacts, lambda r: _has("DS", "DE
+          +", "MLSecOps")),                                              
+      880 +    ("Верификация", page_verify, lambda r: _has("DS", "DE", "M
+          +LSecOps")),                                                   
+      881 +    ("Реестр", page_registry, lambda r: True),                
+      882 +    ("Паспорт", page_passport, lambda r: True),               
+      883 +    ("История", page_events, lambda r: True),                 
+      884 +    ("Находки", page_findings, lambda r: True),               
+      885 +    ("Инструменты", page_scanners, lambda r: _has("DS", "DE", 
+          +"MLSecOps")),                                                 
+      886 +    ("CI/CD логи", page_cicd, lambda r: _has("MLSecOps")),    
+      887 +    ("Деплой / Approve", page_deploy, lambda r: _has("MLSecOps
+          +")),                                                          
+      888 +    ("Пользователи", page_users, lambda r: _has("MLSecOps")), 
+      889 +    ("Карта покрытия", page_coverage, lambda r: CTRL is not No
+          +ne),                                                          
+      890 +    ("Контур", page_contour, lambda r: CTRL is not None),     
+      891 +]                                                             
+      892 +                                                              
+      893 +                                                              
+      894 +def _logout():                                                
+      895 +    for k in ("token", "username", "roles"):                  
+      896 +        st.session_state.pop(k, None)                         
+      897 +    _rerun()                                                  
+      898 +                                                              
+      899 +                                                              
+      900  def render_app():
+      375 -    roles = st.session_state.get("roles", [])                 
+      901 +    inject_css()                                              
+      902 +                                                              
+      903 +    # Роли — источник правды это бэкенд. Обновляем на каждом р
+          +ендере (выдача/отзыв роли,                                    
+      904 +    # истечение токена). 401 → разлогин.                      
+      905 +    try:                                                      
+      906 +        me = api_get("/api/v1/auth/me", timeout=5)            
+      907 +        if me.status_code == 401:                             
+      908 +            _logout()                                         
+      909 +            return                                            
+      910 +        if me.status_code == 200:                             
+      911 +            st.session_state["roles"] = me.json().get("roles",
+          + [])                                                          
+      912 +    except Exception:  # noqa: BLE001                         
+      913 +        pass  # бэкенд мог моргнуть — рендерим по последним из
+          +вестным ролям                                                 
+      914 +                                                              
+      915 +    roles = _roles()                                          
+      916      username = st.session_state.get("username", "?")
+      917  
+      918 +    # Программная навигация (_goto) — применяем до создания ra
+          +dio.                                                          
+      919 +    nav = st.session_state.pop("_nav_request", None)          
+      920 +    for k, val in st.session_state.pop("_pending_state", {}).i
+          +tems():                                                       
+      921 +        st.session_state[k] = val                             
+      922 +                                                              
+      923 +    visible = [(name, fn) for (name, fn, vis) in PAGE_DEFS if 
+          +vis(roles)]                                                   
+      924 +    names = [n for n, _ in visible]                           
+      925 +    if nav in names:                                          
+      926 +        st.session_state["active_page"] = nav                 
+      927 +    if st.session_state.get("active_page") not in names:      
+      928 +        st.session_state["active_page"] = names[0] if names el
+          +se "Дашборд"                                                  
+      929 +                                                              
+      930      with st.sidebar:
+      379 -        st.markdown(f"### 👤 {username}")                     
+      380 -        st.caption(f"Роли: {', '.join(roles) if roles else '—'
+          -}")                                                           
+      381 -        if st.button("Выйти"):                                
+      931 +        st.markdown(                                          
+      932 +            "<div style='font-size:1.2rem;font-weight:800;colo
+          +r:#fff;letter-spacing:-.02em'>"                               
+      933 +            "&#9670; MLSecOps</div><div style='color:#6B7280;f
+          +ont-size:.76rem;margin-bottom:.6rem'>"                        
+      934 +            "Security Platform</div>", unsafe_allow_html=True)
+      935 +        st.markdown(f"### 👤 {username}", unsafe_allow_html=Tr
+          +ue)                                                           
+      936 +        st.markdown(" ".join(_pill(r, "info") for r in roles) 
+          +or _pill("нет роли", "muted"),                                
+      937 +                    unsafe_allow_html=True)                   
+      938 +        if st.button("Выйти", use_container_width=True):      
+      939              _logout()
+      940 +            return                                            
+      941          st.divider()
+      942 +        page = st.radio("Разделы", names, key="active_page", l
+          +abel_visibility="collapsed")                                  
+      943 +        st.divider()                                          
+      944          st.caption(f"Backend: {API}")
+      945  
+      386 -    st.title("🛡️ MLSecOps Platform")                          
+      946 +    if not roles:                                             
+      947 +        st.warning("Вам ещё не назначена роль. Доступен ограни
+          +ченный набор разделов — "                                     
+      948 +                   "попросите MLSecOps выдать роль (DS/DE/…)."
+          +)                                                             
+      949  
+      388 -    tabs_spec = [("Личный кабинет", tab_cabinet),             
+      389 -                 ("Мои артефакты", lambda r=None: tab_artifact
+          -s()),                                                         
+      390 -                 ("MLflow раны", lambda r=None: tab_mlflow()),
+      391 -                 ("Сканеры", lambda r=None: tab_scanners()),  
+      392 -                 ("История событий", lambda r=None: tab_events
+          -())]                                                          
+      393 -    if "MLSecOps" in roles:                                   
+      394 -        tabs_spec.append(("Админка", lambda r=None: tab_admin(
+          -)))                                                           
+      950 +    st.markdown(f"<h1>{page}</h1>", unsafe_allow_html=True)   
+      951 +    fn = dict(visible).get(page)                              
+      952 +    if fn is None:                                            
+      953 +        st.error("Раздел недоступен для вашей роли.")         
+      954 +        return                                                
+      955 +    try:                                                      
+      956 +        fn()                                                  
+      957 +    except Exception as e:  # noqa: BLE001                    
+      958 +        st.error(f"Ошибка раздела: {e}")                      
+      959  
+      396 -    tab_objs = st.tabs([t[0] for t in tabs_spec])             
+      397 -    for tab_obj, (_, fn) in zip(tab_objs, tabs_spec):         
+      398 -        with tab_obj:                                         
+      399 -            try:                                              
+      400 -                fn(roles)                                     
+      401 -            except TypeError:                                 
+      402 -                fn()                                          
+      960  
+      404 -                                                              
+      961  def main():
+      406 -    st.set_page_config(page_title="MLSecOps Platform", layout=
+          -"wide")                                                       
+      962 +    st.set_page_config(page_title="MLSecOps Platform", layout=
+          +"wide", page_icon="◆")                                        
+      963      if not st.session_state.get("token"):
+      964          render_login()
+      965      else:
+      966          render_app()
+      967  
+      968  
+      413 -if st:                                                        
+      969 +if _HAS_STREAMLIT:                                            
+      970      main()
+
+● Now the single additive backend endpoint — verify_chain (wraps the existing
+  db.verify_chain(); nothing else in the backend changes):
+
+● Update(src\api\main.py)
+  ⎿  Added 5 lines
+      470          """История событий (Audit Trail, новые сверху)."""
+      471          return {"events": db.list_events(limit)}
+      472  
+      473 +    @app.get("/api/v1/events/verify_chain")                   
+      474 +    def events_verify_chain():                                
+      475 +        """Проверить целостность hash-chain Audit Trail → {ok,
+          + broken_at, count} (угроза #24)."""                           
+      476 +        return db.verify_chain()                              
+      477 +                                                              
+      478      @app.get("/api/v1/registry")
+      479      def registry():
+      480          return {"models": [], "datasets": []}  # TODO
+
+● Let me verify everything compiles (py_compile, which checks syntax without
+  executing the Streamlit entrypoint):
+
+● Bash(cd 'C:\Users\Kolya\Desktop\Новая папка\MlSecOps' && python -X utf8 -m
+      py_compile ui/app.py src/common/controls.py src/common/__init__.py
+      src/api/main.py && echo…)
+  ⎿  OK: all compiled
+
+● Compiles clean. Now a runtime smoke test — confirm the controls catalog loads,
+  the backend still works end-to-end (your __main__ self-test), and the new
+  verify_chain endpoint responds:
+
+● Bash(cd 'C:\Users\Kolya\Desktop\Новая папка\MlSecOps' && python -X utf8 -c
+      "from src.common import controls as c; cov=c.coverage(); print('controls
+      OK:', cov)")
+  ⎿  controls OK: {'total': 30, 'live': 25, 'accepted': 0, 'planned': 5, 'c
+     losed': 25, 'pct': 83}
+
+● Bash(cd 'C:\Users\Kolya\Desktop\Новая папка\MlSecOps' && python -X utf8 -c "
+      import tempfile, os…)
+  ⎿  me: {'username': 'msecops', 'roles': ['MLSecOps']}
+     events: 200
+     verify_chain: {'ok': True, 'broken_at': None, 'count': 1}
+     … +4 lines (ctrl+o to expand)
+
+● Backend is healthy and the new endpoint works (verify_chain → {ok, broken_at, 
+  count}), /admin/users shape matches my adapter, and empty /models & /findings
+  will trigger the honest stubs. Now let me validate the UI itself renders
+  without errors using Streamlit's official AppTest harness — both the login
+  screen and every page (with a fake session, no backend, to confirm graceful
+  degradation):
+
+● Bash(cd 'C:\Users\Kolya\Desktop\Новая папка\MlSecOps' && python -X utf8 -c "
+      from streamlit.testing.v1 import AppTest…)
+  ⎿  2026-06-04 12:00:18.867 WARNING streamlit.runtime.scriptrunner_utils.s
+     cript_run_context: Thread 'MainThread': missing ScriptRunContext! This
+      warning can be ignored when running in bare mode.
+     … +141 lines (ctrl+o to expand)
+
+● All green: login screen renders (both tabs present), and all 14 role-gated 
+  pages render with zero uncaught exceptions even with no backend (graceful
+  degradation). The only warnings are benign (ScriptRunContext is normal for the
+  test harness; use_container_width is a deprecation notice that still works
+  and matches the surrounding codebase).
+
+  Let me clean up one sloppy leftover I noticed in the dashboard (if True else 
+  []) and re-verify:
+
+● Update(ui\app.py)
+  ⎿  Added 1 line, removed 1 line
+      299  
+      300  # ─────────────────────────────── ДАШБОРД ────────────────────
+           ────────────────
+      301  def page_dashboard():
+      302 -    models = get_json("/api/v1/models", {}).get("models", []) 
+          -if True else []                                               
+      302 +    models = get_json("/api/v1/models", {}).get("models", []) 
+      303      events = get_json("/api/v1/events?limit=100", {}).get("eve
+           nts", [])
+      304      findings = get_json("/api/v1/findings", {}).get("findings"
+           , [])
+      305  
+
+● Re-verify compile + test the two remaining real endpoints the UI hits that I
+  haven't exercised yet (/artifacts and /auth/token), to confirm their shapes
+  match what the merged Кабинет/Мои-артефакты pages expect:
+
+● Bash(cd 'C:\Users\Kolya\Desktop\Новая папка\MlSecOps' && python -X utf8 -m
+      py_compile ui/app.py && echo "compile OK" && python -X utf8 -c "
+      import tempfile…)
+  ⎿  compile OK
+     artifacts keys: ['mine', 'my_clearance', 'shared_with_me'] | my_cleara
+     nce: 3
+     … +2 lines (ctrl+o to expand)
+
+● Everything checks out end-to-end: /artifacts → {mine, shared_with_me, 
+  my_clearance}, /auth/token → usage snippet, /auth/me → roles — all match what
+  the merged Кабинет/Мои-артефакты pages consume.
+
+  Let me record this merge in project memory for future sessions:
+
+  Wrote 1 memory (ctrl+o to expand)
+
+● Now add the index pointer:
+  Recalled 1 memory, wrote 2 memories (ctrl+o to expand)
+
+● Merge complete and validated. Here's what landed.
+
+  Что сделано
+
+  Объединил полированный 12-страничный UI второго разработчика с твоим реальным
+  бэкендом A. Результат — в корневом ui/app.py (старый ЛК-UI заменён).
+  todo_frontend/ не тронут — остался референсом.
+
+  Изменённые/созданные файлы:
+
+  ┌─────────────────────────────┬────────────────────────────────────────────┐
+  │            Файл             │                    Что                     │
+  ├─────────────────────────────┼────────────────────────────────────────────┤
+  │ ui/app.py                   │ ⭐ переписан: тема + 14 разделов нового    │
+  │                             │ фронта на реальном API с auth              │
+  ├─────────────────────────────┼────────────────────────────────────────────┤
+  │ src/common/controls.py +    │ перенёс GRC-каталог (нужен «Карте          │
+  │ __init__.py                 │ покрытия»/«Контуру»)                       │
+  ├─────────────────────────────┼────────────────────────────────────────────┤
+  │ .streamlit/config.toml      │ тёмная тема (как у второго фронта)         │
+  ├─────────────────────────────┼────────────────────────────────────────────┤
+  │ src/api/main.py             │ +1 аддитивный эндпоинт GET                 │
+  │                             │ /api/v1/events/verify_chain                │
+  └─────────────────────────────┴────────────────────────────────────────────┘
+
+  Применил 3 твоих решения
+
+  1. Только реальный логин — экран входа/регистрации (JWT), роли строго из
+  /auth/me, обновляются на каждом рендере (выдал роль → видно сразу; токен истёк
+  → 401 → разлогин). Демо-переключателя ролей нет.
+  2. Твои вкладки интегрированы, не потеряны: «Личный кабинет» + «MLflow раны» →
+  слиты в раздел Кабинет; «Мои артефакты» (приватность/шаринг) → отдельный
+  раздел; старая Админка → раздел Пользователи (реальные /admin/*).
+  3. Честные пустые заглушки — все MOCK_* удалены. Где бэк-ручка заглушка —
+  единый блок «🚧 раздел готов в UI, бэкенд-ручка не реализована», без фейковых
+  данных.
+
+  Карта разделов
+
+  Реально работают (бэкенд A): Дашборд (счётчики), Кабинет, Мои артефакты,
+  История (+проверка хеш-цепочки), Инструменты (гейты G1/G2/G3 через /ci/trigger
+  + загрузка CSV), Пользователи, Карта покрытия, Контур.
+  Честные заглушки: Реестр (реестр пуст), Паспорт, Находки, Верификация,
+  раннер-матрица гейтов, CI/CD логи, Деплой/Approve.
+
+  Разделы фильтруются по ролям: CEO видит read-only обзоры; DS/DE —
+  кабинет/артефакты/инструменты; MLSecOps — всё + Пользователи/Деплой/CI-логи.
+
+  Проверено
+
+  - Бэкенд не пострадал: твой __main__-самотест проходит; единственное изменение
+  — аддитивный verify_chain.
+  - TestClient:
+  login/me/events/verify_chain/admin-users/models/findings/artifacts/token — все
+  отдают ожидаемые формы.
+  - Streamlit AppTest: логин-экран + все 14 разделов рендерятся без единого 
+  необработанного исключения, в т.ч. при выключенном бэкенде (graceful).
+
+  Запуск прежний: .\infra\start.cmd (он уже поднимает ui/app.py), логин msecops
+  / admin-pass.
+
+  Чего НЕ делал (вне scope «мерж фронта», флажком на будущее)
+
+  - Рантайм C (serve app_text/app_risk, train_text/risk, monitor) не подключал →
+  метрики дрейфа/429 на Дашборде честно помечены «не подключено». Если захочешь
+  живой мониторинг — это отдельная задача (логи рантайма → бэк → дашборд).
+  - Бэкенд-ручки реестра/находок/деплоя остались заглушками (как ты и просил) —
+  их реализация тоже отдельный заход.
+
+  Хочешь — могу поднять полный стенд и пройти живой сценарий (логин → выдать
+  роль → запустить Data Gate → посмотреть Историю), либо взяться за реализацию
+  какой-то из заглушек (например, реальные /findings поверх существующей таблицы
+  findings).
+
+✻ Cooked for 20m 16s
+
+> /context 
+  ⎿  Context Usage
+     ⛀ ⛁ ⛁ ⛀ ⛀ ⛀ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   Opus 4.8
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   claude-opus-4-8
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   235.1k/1m tokens (24%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ 
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: 2.8k tokens (0.3%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: 12.2k tokens (1.2%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Custom agents: 148 tokens (0.0%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Memory files: 159 tokens (0.0%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Skills: 1.3k tokens (0.1%)
+                                               ⛁ Messages: 220.3k tokens (22.0%)
+                                               ⛶ Free space: 763.1k (76.3%)
+
+     Custom agents · /agents
+
+     Project
+     └ context-consultant: 148 tokens
+
+     Memory files · /memory
+     └ ~.claude\projects\C--Users-Kolya-Desktop-------------MlSecOps\memory\MEMORY.md: 159 tokens
+
+     Skills · /skills
+
+     Built-in
+     ├ claude-api: ~250 tokens
+     ├ update-config: ~240 tokens
+     ├ code-review: ~130 tokens
+     ├ schedule: ~130 tokens
+     ├ run: ~120 tokens
+     ├ loop: ~110 tokens
+     ├ verify: ~90 tokens
+     ├ keybindings-help: ~80 tokens
+     ├ fewer-permission-prompts: ~60 tokens
+     ├ simplify: ~60 tokens
+     ├ security-review: ~30 tokens
+     ├ init: ~20 tokens
+     └ review: < 20 tokens
+
+      Suggestions
+      i File reads using 56.1k tokens (6%) → save ~16.8k
+        If you are re-reading files, consider referencing earlier reads. Use offset/limit for large files.
+
+> /model 
+  ⎿  Kept model as Opus 4.8
+
+> /effort                                                                       
+  ⎿  Set effort level to high: Comprehensive implementation with extensive
+     testing and documentation · burns fastest — medium handles most tasks
+
+> я запустил start.cmd но бек не запустился INFO:     Started server process    
+  [4992]                                                                        
+  INFO:     Waiting for application startup.                                    
+  INFO:     Application startup complete.                                       
+  ERROR:    [Errno 13] error while attempting to bind on address ('127.0.0.1',  
+  8000): [winerror 10013] сделана попытка доступа к сокету методом, запрещенным 
+  правами доступа                                                               
+  INFO:     Waiting for application shutdown.                                   
+  INFO:     Application shutdown complete..  В чем проблема? Проверь все ли     
+  запускается и сделай так, чтобы весь сервис поднимался через @infra/start.cmd 
+  ⎿  Read infra\start.cmd (68 lines)
+
+● WinError 10013 on bind (not 10048 "address in use") almost always means the
+  port is reserved by Windows — typically Hyper-V / WSL2 / Docker Desktop carves
+  out dynamic "excluded port ranges," and 8000 often lands inside one. Binding
+  is then forbidden even though nothing is listening. Let me confirm before
+  changing anything.
+
+● PowerShell(Write-Output "=== Excluded TCP port ranges (Hyper-V/WSL/Docker
+            reservations) ==="; netsh int ipv4 show excludedportrange
+            protocol=tcp; Write-Output "`n=== Is an…)
+  ⎿  === Excluded TCP port ranges (Hyper-V/WSL/Docker reservations) ===
+
+     Protocol tcp Port Exclusion Ranges
+     … +20 lines (ctrl+o to expand)
+
+● Confirmed — that's the root cause. The reserved ranges include 7904–8003 and
+  8004–8103, and your backend port 8000 sits inside 7904–8003.
+  Hyper-V/WSL2/Docker reserved that block, so native (non-Hyper-V) processes
+  like uvicorn get "access denied" (10013) on bind even though nothing is
+  listening. MLflow's 5000 and the UI's 8501 are fine (8501 is your
+  already-running Streamlit from the attempt).
+
+  Fix: move the backend to a port outside every reserved range (8104–14088 is
+  all free). Let me check for other hardcoded 8000 references and the compose
+  setup before changing, so I keep Docker working too (inside containers 8000 is
+  fine — the reservation only bites the Windows host).
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Decision: Docker stays on 8000 (inside containers the host reservation doesn't
+  apply, and Docker publishes via winnat which can use reserved ports), but the
+  local-host launchers and defaults move to 8200 (free band 8104–14088). Let me
+  read the two launchers I need to rewrite, then make all edits.
+
+  Read 2 files (ctrl+o to expand)
+
+● Confirmed cause and scope. Now applying the fix — backend moves to 8200 on the
+  local-host path (Docker untouched). Rewriting start.cmd with a single
+  API_PORT var + an explanatory note so nobody moves it back into the reserved
+  range:
+
+● Write(infra\start.cmd)
+  ⎿  Added 16 lines, removed 4 lines
+      11  rem
+      12  rem  Opens three windows:
+      13  rem    1) MLflow server  :5000  (sqlite store + file artifacts 
+          OUTSIDE the repo)
+      14 -rem    2) Backend (API)  :8000  (with the /mlflow auth-proxy)  
+      14 +rem    2) Backend (API)  :8200  (with the /mlflow auth-proxy)  
+      15  rem    3) Streamlit UI   :8501
+      16  rem
+      17  rem  MLflow data goes to %USERPROFILE%\mlsec_mlflow (clean path
+          , no spaces/cyrillic)
+      18  rem  - otherwise MLflow breaks parsing the file:// artifact URI
+          .
+      19 +rem                                                            
+      20 +rem  WHY 8200 AND NOT 8000: on Windows with Hyper-V / WSL2 / Do
+         +cker Desktop, winnat                                           
+      21 +rem  reserves dynamic TCP ranges (e.g. 7904-8003) and 8000 ofte
+         +n lands inside one.                                            
+      22 +rem  A native (non-Hyper-V) process like uvicorn then FAILS to 
+         +bind with WinError                                             
+      23 +rem  10013 ("access denied") even though nothing is listening. 
+         +8200 sits in the                                               
+      24 +rem  free band (8104-14088). Inspect reservations with:        
+      25 +rem      netsh int ipv4 show excludedportrange protocol=tcp    
+      26 +rem  Docker compose still uses 8000 (container-internal; not af
+         +fected by this).                                               
+      27  rem ===========================================================
+          =================
+      28  
+      29  rem Repo root = parent of this script's folder; make it current
+           (children inherit).
+      30  set "REPO=%~dp0.."
+      31  cd /d "%REPO%"
+      32  
+      33 +rem Backend API port (kept OUT of the Hyper-V/winnat reserved r
+         +anges; see note above).                                        
+      34 +set "API_PORT=8200"                                            
+      35 +                                                               
+      36  rem MLflow store and artifacts (forward slashes for the file://
+           URI).
+      37  set "MLDATA=%USERPROFILE%\mlsec_mlflow"
+      38  set "ARTDIR=%MLDATA%\artifacts"
+     ...
+      45  set "DB_BACKEND=sqlite"
+      46  if not defined BOOTSTRAP_ADMIN_PASSWORD set "BOOTSTRAP_ADMIN_PA
+          SSWORD=admin-pass"
+      47  set "MLFLOW_UPSTREAM_URL=http://127.0.0.1:5000"
+      37 -set "GATEKEEPER_URL=http://localhost:8000"                     
+      48 +set "GATEKEEPER_URL=http://localhost:%API_PORT%"               
+      49  set "APP_DEBUG=true"
+      50  
+      51  echo Repo:         %REPO%
+      52  echo MLflow store: %STORE%
+      53  echo Artifacts:    %ARTURI%
+      54 +echo Backend port: %API_PORT%                                  
+      55  echo.
+      56  
+      57  rem 0) Seed the first admin (idempotent).
+     ...
+      64  timeout /t 3 /nobreak >nul
+      65  
+      66  rem 2) Backend (FastAPI + auth-proxy to MLflow).
+      55 -start "Backend :8000" cmd /k python -X utf8 -m uvicorn src.api.
+         -main:app --host 127.0.0.1 --port 8000                          
+      67 +start "Backend :%API_PORT%" cmd /k python -X utf8 -m uvicorn sr
+         +c.api.main:app --host 127.0.0.1 --port %API_PORT%              
+      68  
+      69  rem 3) Streamlit UI.
+      70  start "UI :8501" cmd /k python -X utf8 -m streamlit run ui/app.
+          py --server.port 8501
+     ...
+      72  echo.
+      73  echo Started. Open:
+      74  echo   UI:      http://localhost:8501   (login msecops / %BOOTS
+          TRAP_ADMIN_PASSWORD%)
+      63 -echo   API:     http://localhost:8000/docs                     
+      75 +echo   API:     http://localhost:%API_PORT%/docs               
+      76  echo   MLflow:  http://localhost:5000
+      77  echo.
+      78  echo Each service runs in its own window. To stop: close the wi
+          ndows or run infra\stop.cmd
+
+● Now stop.cmd (kill the new backend port too):
+
+● Update(infra\stop.cmd)
+  ⎿  Added 1 line, removed 1 line
+      3  setlocal enableextensions
+      4  
+      5  rem ============================================================
+         ================
+      6 -rem  stop.cmd - stop the local dev stack (ports 8000/5000/8501).
+      6 +rem  stop.cmd - stop the local dev stack (ports 8200/5000/8501).
+      7  rem  (ASCII-only on purpose: cmd.exe mis-parses non-ASCII .cmd f
+         iles.)
+      8  rem  Run:   infra\stop.cmd
+      9  rem ============================================================
+         ================
+
+● Update(infra\stop.cmd)
+  ⎿  Added 1 line, removed 1 line
+       9  rem ===========================================================
+          =================
+      10  
+      11  set "FOUND="
+      12 -for %%p in (8000 5000 8501) do (                               
+      12 +for %%p in (8200 5000 8501) do (                               
+      13    for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":%%p " ^|
+           findstr LISTENING') do (
+      14      echo Killing PID %%P on port %%p
+      15      taskkill /F /PID %%P >nul 2>nul
+
+● Update(infra\stop.cmd)
+  ⎿  Added 1 line, removed 1 line
+      16      set "FOUND=1"
+      17    )
+      18  )
+      19 -if not defined FOUND echo No listeners found on ports 8000/5000
+         -/8501.                                                         
+      19 +if not defined FOUND echo No listeners found on ports 8200/5000
+         +/8501.                                                         
+      20  echo Done.
+      21  endlocal
+
+● Now the alternative launcher run_local.ps1, and the local-host defaults in
+  ui/app.py, examples/dev_train_mock.py, and tests/mlflow_smoke.py (so manual
+  runs hit the right port too):
+
+● Update(infra\run_local.ps1)
+  ⎿  Added 1 line, removed 1 line
+       4  #
+       5  # Поднимает три процесса в отдельных окнах:
+       6  #   1) MLflow server   :5000  (sqlite-стор + file-артефакты ВНЕ
+           репозитория)
+       7 -#   2) Backend (API)   :8000  (с /mlflow auth-прокси)          
+       7 +#   2) Backend (API)   :8200  (с /mlflow auth-прокси; 8000 заре
+         +зервирован Hyper-V/winnat → WinError 10013)                    
+       8  #   3) Streamlit UI    :8501
+       9  #
+      10  # ВАЖНО: MLflow-данные кладём в $env:USERPROFILE\mlsec_mlflow, 
+          а НЕ в репозиторий —
+
+● Update(infra\run_local.ps1)  ⎿  Added 1 line, removed 1 line
+      43  Start-Process powershell -ArgumentList @(
+      44    "-NoExit","-Command",
+      45    "cd '$Repo'; `$env:DB_BACKEND='sqlite'; `$env:MLFLOW_UPSTREAM
+          _URL='http://127.0.0.1:5000'; " +
+      46 -  "python -X utf8 -m uvicorn src.api.main:app --host 127.0.0.1 
+         ---port 8000"                                                   
+      46 +  "python -X utf8 -m uvicorn src.api.main:app --host 127.0.0.1 
+         +--port 8200"                                                   
+      47  )
+      48  
+      49  # 3) UI
+
+● Update(infra\run_local.ps1)
+  ⎿  Added 1 line, removed 1 line
+      49  # 3) UI
+      50  Start-Process powershell -ArgumentList @(
+      51    "-NoExit","-Command",
+      52 -  "cd '$Repo'; `$env:GATEKEEPER_URL='http://localhost:8000'; `$
+         -env:APP_DEBUG='true'; " +                                      
+      52 +  "cd '$Repo'; `$env:GATEKEEPER_URL='http://localhost:8200'; `$
+         +env:APP_DEBUG='true'; " +                                      
+      53    "python -X utf8 -m streamlit run ui/app.py --server.port 8501
+          "
+      54  )
+      55  
+
+● Update(infra\run_local.ps1)
+  ⎿  Error editing file
+
+● Update(ui\app.py)
+  ⎿  Added 1 line, removed 1 line
+      36  except Exception:  # noqa: BLE001
+      37      CTRL = None
+      38  
+      39 -API = os.getenv("GATEKEEPER_URL", "http://localhost:8000")     
+      39 +API = os.getenv("GATEKEEPER_URL", "http://localhost:8200")     
+      40  APP_DEBUG = os.getenv("APP_DEBUG", "false").lower() == "true"
+      41  MLFLOW_UI_URL = os.getenv("MLFLOW_UI_URL", "http://localhost:50
+          00")
+      42  
+
+● Update(examples\dev_train_mock.py)
+  ⎿  File must be read first
+
+● Update(tests\mlflow_smoke.py)
+  ⎿  File must be read first
+
+● Two need a prior Read, and the run_local.ps1 echo had wrong indentation. Let
+  me read those spots and fix:
+
+  Read 2 files (ctrl+o to expand)
+
+● Update(examples\dev_train_mock.py)
+  ⎿  Added 1 line, removed 1 line
+      34  DEV_PASSWORD = "123"
+      35  EXPERIMENT = f"{DEV_USER}_research"     # «аккаунт»/эксперимент
+           разработчика
+      36  
+      37 -BACKEND = os.getenv("GATEKEEPER_URL", "http://localhost:8000") 
+      37 +BACKEND = os.getenv("GATEKEEPER_URL", "http://localhost:8200") 
+      38  
+      39  
+      40  def login() -> dict:
+
+● Update(tests\mlflow_smoke.py)
+  ⎿  Added 1 line, removed 1 line
+      12  
+      13  import requests
+      14  
+      15 -BACKEND = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")    
+      15 +BACKEND = os.getenv("BACKEND_URL", "http://127.0.0.1:8200")    
+      16  USER = os.getenv("SMOKE_USER", "msecops")
+      17  PASSWORD = os.getenv("SMOKE_PASSWORD", "admin-pass")
+      18  
+
+● Update(infra\run_local.ps1)
+  ⎿  Added 1 line, removed 1 line
+      55  
+      56  Write-Host "`nЗапущено. Открой:"
+      57  Write-Host "  UI:      http://localhost:8501   (логин msecops /
+           $($env:BOOTSTRAP_ADMIN_PASSWORD))"
+      58 -Write-Host "  API:     http://localhost:8000/docs"             
+      58 +Write-Host "  API:     http://localhost:8200/docs"             
+      59  Write-Host "  MLflow:  http://localhost:5000   (напрямую; прод 
+          — только через прокси)"
+
+● All port references updated. Now let me prove the fix: a raw socket-bind test
+  that reproduces the failure on 8000 and confirms 8200 works (this is exactly
+  what uvicorn does internally):
+
+● Bash(cd 'C:\Users\Kolya\Desktop\Новая папка\MlSecOps' && python -X utf8 -c "
+      import socket…)
+  ⎿  127.0.0.1:8000  -> BIND FAILED: [WinError 10013] Сделана попытка досту
+     па к сокету методом, запрещенным правами доступа
+     127.0.0.1:8200  -> BIND OK (usable)
+
+● Root cause reproduced and fixed: 8000 → WinError 10013 (Hyper-V reservation),
+  8200 → binds fine. Now let me launch the actual backend on 8200 to confirm the
+  full service comes up, then exercise it over real HTTP:
+
+● Bash(cd 'C:\Users\Kolya\Desktop\Новая папка\MlSecOps' && DB_BACKEND=sqlite
+      MLFLOW_UPSTREAM_URL=http://127.0.0.1:5000 python -X utf8 -m uvicorn
+      src.api.main:app --hos…)
+  ⎿  Running in the background (↓ to manage)
+
+● Let me wait for it to bind and then hit it over real HTTP:
+
+● PowerShell($ok=$false; for ($i=0; $i -lt 20; $i++) { try { $r =
+            Invoke-WebRequest -Uri "http://127.0.0.1:8200/api/v1/events"
+            -UseBasicParsing -TimeoutSec 3; if ($r.StatusC…)
+  ⎿  Backend on 8200 is LIVE.
+     GET /api/v1/events -> 200
+     GET /api/v1/events/verify_chain -> 200  body={"ok":true,"broken_at":nu
+     … +2 lines (ctrl+o to expand)
+
+● Backend comes up cleanly on 8200 — /events, the new /events/verify_chain (76
+  events, chain valid), and /openapi.json all return 200. The fix is verified
+  end-to-end. Let me stop the test backend (you'll launch your own via
+  start.cmd):
+
+● PowerShell($c = Get-NetTCPConnection -LocalPort 8200 -State Listen
+            -ErrorAction SilentlyContinue; if ($c) { $c.OwningProcess |
+            Select-Object -Unique | ForEach-Object { Sto…)
+  ⎿  Stopped test backend PID 26440
+
+● Background command "Launch backend on 8200 (background)" failed with exit code 127
+
+● Готово. Диагноз подтверждён и пофикшен.
+
+  В чём была проблема
+
+  WinError 10013 при bind на 127.0.0.1:8000 — это не «порт занят», а «порт
+  зарезервирован Windows». На Win11 с Hyper-V / WSL2 / Docker Desktop служба
+  winnat забирает динамические диапазоны TCP-портов под себя. У тебя в резерве:
+
+  7904–8003   ← сюда попадает 8000
+  8004–8103
+
+  Нативный процесс (uvicorn) внутри такого диапазона забиндиться не может →
+  10013, хотя «слушателя» там нет. Я это воспроизвёл сокет-тестом:
+
+  127.0.0.1:8000  -> BIND FAILED: [WinError 10013] ...
+  127.0.0.1:8200  -> BIND OK (usable)
+
+  Что сделал
+
+  Перенёс локальный бэкенд на 8200 (свободная полоса 8104–14088). Docker оставил
+  на 8000 — внутри контейнеров резерв хоста не действует, а публикацию порта
+  Docker делает через тот же winnat, так что 8000 там валиден.
+
+  ┌───────────────────────────────────┬─────────────────────────────────────┐
+  │               Файл                │              Изменение              │
+  ├───────────────────────────────────┼─────────────────────────────────────┤
+  │                                   │ API_PORT=8200,                      │
+  │ infra/start.cmd                   │ GATEKEEPER_URL=…:8200, +комментарий │
+  │                                   │  «почему не 8000»                   │
+  ├───────────────────────────────────┼─────────────────────────────────────┤
+  │ infra/stop.cmd                    │ гасит порты 8200/5000/8501          │
+  ├───────────────────────────────────┼─────────────────────────────────────┤
+  │ infra/run_local.ps1               │ альтернативный лаунчер → 8200       │
+  ├───────────────────────────────────┼─────────────────────────────────────┤
+  │ ui/app.py                         │ дефолт GATEKEEPER_URL → 8200        │
+  ├───────────────────────────────────┼─────────────────────────────────────┤
+  │ examples/dev_train_mock.py,       │ дефолт → 8200                       │
+  │ tests/mlflow_smoke.py             │                                     │
+  ├───────────────────────────────────┼─────────────────────────────────────┤
+  │ docker-compose.yml,               │ не трогал (8000 корректен в         │
+  │ Dockerfile.backend                │ контейнерах)                        │
+  └───────────────────────────────────┴─────────────────────────────────────┘
+
+  Проверил, что всё поднимается
+
+  - Сокет-бинд: 8000 падает (как у тебя), 8200 — ок.
+  - Реально запустил uvicorn …:8200: GET /api/v1/events → 200, GET 
+  /api/v1/events/verify_chain → {"ok":true,...,"count":76}, /openapi.json → 200.
+  (Тестовый процесс затем погасил — ты поднимешь свой через start.cmd.)
+  - MLflow :5000 и UI :8501 — свободны/работают; start.cmd прокидывает
+  GATEKEEPER_URL=…:8200 в окно UI, так что фронт пойдёт на правильный порт.
+
+  Как запустить сейчас
+
+  У тебя от прошлой попытки висит старый Streamlit на :8501 (он смотрел на
+  мёртвый :8000). Сначала погаси, потом запусти заново:
+
+  .\infra\stop.cmd
+  .\infra\start.cmd
+
+  Откроется: UI http://localhost:8501, API http://localhost:8200/docs, MLflow
+  http://localhost:5000. Логин msecops / admin-pass.
+
+  Если когда-нибудь захочешь вернуть именно 8000 — альтернатива без смены порта:
+  net stop winnat && net start winnat (от админа) сбрасывает резервации, но они
+  могут вернуться после перезагрузки/старта Docker, поэтому перенос на 8200
+  надёжнее.
+
+  Замечание: в HANDOFF.md/README.md ещё встречается :8000 — для Docker-пути
+  (README) это верно, а пара строк про локальный запуск в HANDOFF теперь
+  устарела. Скажи, если хочешь, чтобы я их тоже причесал.
+
+✻ Cogitated for 5m 44s
+※ recap: Goal: merge the second dev's frontend into your backend. Done and verified, plus fixed the backend port (8000 was reserved by Windows, moved local to 8200). Next: run infra\stop.cmd then infra\start.cmd and log in as msecops/admin-pass. (disable recaps in /config)
+
+> Да. Давай ты теперь напишешь доку по фронту и по беку, что реализовано с      
+  точки хрения бизнес логики, как оно реализованно технически. Создай какую     
+  нибудь новую директорию и опиши проект в текущем состоянии. Пиши максимально  
+  подробно и опиши абсолютно все аспекты. в одном файле бизнес логику и         
+  функционал который у нас щас есть. в двух других тех описание бека и фронта.  
+
+● Хорошо. Сначала причешу устаревшие :8000 в HANDOFF, а потом напишу подробную
+  документацию. Чтобы описать «всё как есть» точно (без выдумок), дочитаю файлы,
+  которые ещё не видел целиком: security_check.py, mlflow_proxy.py,
+  model_card.py, storage.py, seed_admin.py, init.sql.
+
+  Read 6 files (ctrl+o to expand)
+
+● Knowledge complete. First, the HANDOFF cleanup you approved — let me read the
+  two regions with stale :8000 (local-run) references and fix them (README's
+  :8000 is the Docker path and stays correct):
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(HANDOFF.md)
+  ⎿  Added 1 line, removed 1 line
+      143    **MLflow раны** (таблица из `/api/v1/mlflow/runs` + ссылка н
+           а MLflow UI),
+      144    **Сканеры** (`/ci/trigger`), **История событий** (`/events`)
+           ,
+      145    **Админка** (только MLSecOps: назначение ролей, создание юзе
+           ров, выдача доступа).
+      146 -- Все запросы с `Authorization: Bearer`. Дефолт `GATEKEEPER_UR
+          -L=http://localhost:8000`.                                     
+      146 +- Все запросы с `Authorization: Bearer`. Дефолт `GATEKEEPER_UR
+          +L=http://localhost:8200`.                                     
+      147  
+      148  ### `infra/seed_admin.py` — bootstrap первого админа ✅
+      149  - Создаёт `msecops` + роль MLSecOps (идемпотентно). Пароль из 
+           `BOOTSTRAP_ADMIN_PASSWORD` (дефолт `admin-pass`).
+
+● Update(HANDOFF.md)
+  ⎿  Added 1 line, removed 1 line
+      150  - Запуск: `python -m infra.seed_admin`.
+      151  
+      152  ### `infra/run_local.ps1` — запуск всего дев-стенда (Windows) 
+           ✅
+      153 -- Поднимает в 3 окнах: MLflow (:5000), backend (:8000), Stream
+          -lit (:8501) + сидит админа.                                   
+      153 +- Поднимает в 3 окнах: MLflow (:5000), backend (:8200), Stream
+          +lit (:8501) + сидит админа.                                   
+      154  - MLflow-данные кладёт в `%USERPROFILE%\mlsec_mlflow` (ВНЕ реп
+           о — см. урок ниже).
+      155  
+      156  ### Тесты / примеры ✅
+
+● Update(HANDOFF.md)
+  ⎿  Added 4 lines, removed 1 line
+      184  # либо старый способ:
+      185  powershell -ExecutionPolicy Bypass -File infra\run_local.ps1
+      186  ```
+      187 -Поднимет: MLflow :5000, backend :8000 (`/docs` — Swagger), UI 
+          -:8501. Остановить: `.\infra\stop.cmd`.                        
+      187 +Поднимет: MLflow :5000, backend :8200 (`/docs` — Swagger), UI 
+          +:8501. Остановить: `.\infra\stop.cmd`.                        
+      188  Админ по умолчанию: **msecops / admin-pass**.
+      189 +> Порт бэка локально — **8200**, НЕ 8000: на Windows с Hyper-V
+          +/WSL2/Docker порт 8000 часто                                  
+      190 +> попадает в зарезервированный winnat-диапазон (7904–8003) → u
+          +vicorn падает с `WinError 10013`.                             
+      191 +> В Docker остаётся 8000 (внутри контейнеров резерв хоста не д
+          +ействует).                                                    
+      192  
+      193  ### Запуск вручную (3 терминала)
+      194  ```powershell
+
+● Update(HANDOFF.md)
+  ⎿  Added 1 line, removed 1 line
+      199    --artifacts-destination "file:///C:/Users/<USER>/mlsec_mlflo
+           w/artifacts" --host 127.0.0.1 --port 5000 --workers 1
+      200  # 2) backend
+      201  $env:DB_BACKEND="sqlite"; $env:MLFLOW_UPSTREAM_URL="http://127
+           .0.0.1:5000"
+      202 -python -X utf8 -m uvicorn src.api.main:app --host 127.0.0.1 --
+          -port 8000                                                     
+      202 +python -X utf8 -m uvicorn src.api.main:app --host 127.0.0.1 --
+          +port 8200                                                     
+      203  # 3) UI
+      204  python -X utf8 -m streamlit run ui/app.py --server.port 8501
+      205  ```
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(HANDOFF.md)
+  ⎿  Added 1 line, removed 1 line
+      485  (ExecutionPolicy блокирует). `.cmd`-батники ExecutionPolicy НЕ
+            касается — запускаются и из
+      486  PowerShell, и из cmd, и двойным кликом.
+      487  
+      488 -- **`infra\start.cmd`** — сид админа + три окна: MLflow `:5000
+          -`, backend `:8000`, Streamlit `:8501`.                        
+      488 +- **`infra\start.cmd`** — сид админа + три окна: MLflow `:5000
+          +`, backend `:8200`, Streamlit `:8501`.                        
+      489    Между MLflow и остальными `timeout /t 3`. MLflow-данные → `%
+           USERPROFILE%\mlsec_mlflow`
+      490    (чистый путь; `file:///`-URI с прямыми слэшами через `set "X
+           =%VAR:\=/%"`). Env (DB_BACKEND,
+      491    MLFLOW_UPSTREAM_URL, GATEKEEPER_URL, APP_DEBUG, BOOTSTRAP_AD
+           MIN_PASSWORD) ставится в родителе,
+
+● Update(HANDOFF.md)
+  ⎿  Added 1 line, removed 1 line
+      490    (чистый путь; `file:///`-URI с прямыми слэшами через `set "X
+           =%VAR:\=/%"`). Env (DB_BACKEND,
+      491    MLFLOW_UPSTREAM_URL, GATEKEEPER_URL, APP_DEBUG, BOOTSTRAP_AD
+           MIN_PASSWORD) ставится в родителе,
+      492    дочерние окна наследуют. Запуск: `.\infra\start.cmd`.
+      493 -- **`infra\stop.cmd`** — гасит слушателей на портах 8000/5000/
+          -8501 (`netstat -ano | findstr` →                              
+      493 +- **`infra\stop.cmd`** — гасит слушателей на портах 8200/5000/
+          +8501 (`netstat -ano | findstr` →                              
+      494    `taskkill /F /PID`). Запуск: `.\infra\stop.cmd`.
+      495  - **КРИТИЧНО — оба файла ЧИСТО ASCII, без BOM** (см. урок §9.1
+           2.1). `run_local.ps1` оставлен как есть.
+      496  
+
+● HANDOFF is now consistent (8200 locally, 8000 stays for Docker, with an
+  explanatory note). Now the three documentation files in a new
+  docs/current_state/ directory. Starting with the business/functionality doc:
+
+● Write(docs\current_state\01_BUSINESS_AND_FEATURES.md)
+  ⎿  Wrote 316 lines to docs\current_state\01_BUSINESS_AND_FEATURES.md
+         ние)SecOps Platform — Бизнес-логика и функционал (текущее состоя
+       3 > Дата среза: 2026-06-04. Это «снимок» того, **что система делае
+         т с точки зрения бизнеса и
+         еально работает, что — заглушка.акие роли, какие сценарии, что р
+       5 > Техническое «как» — в соседних файлах [`02_BACKEND_TECHNICAL.m
+       6 > и [`03_FRONTEND_TECHNICAL.md`](03_FRONTEND_TECHNICAL.md).
+       8 Легенда статусов по всему документу:
+       9 - ✅ **работает** — реализовано в бэкенде и фронте, проверено en
+      10 - 🟡 **частично** — поток работает, но внутренняя логика упрощен
+         а/плейсхолдер;
+     … +449 lines (ctrl+o to expand)
+
+● Now the backend technical doc — exhaustive coverage of every module, the data
+  model, all endpoints, the proxy, and security decisions:
+
+● Write(docs\current_state\02_BACKEND_TECHNICAL.md)
+  ⎿  Wrote 407 lines to docs\current_state\02_BACKEND_TECHNICAL.md
+         ояние)cOps Platform — Техническое описание бэкенда (текущее сост
+       2 
+         A» (Gatekeeper + ядро `core/`робный технический разбор бэкенда «
+       4 > + MLflow за auth-прокси + БД). Бизнес-контекст — в [`01_BUSINE
+       5 > фронт — в [`03_FRONTEND_TECHNICAL.md`](03_FRONTEND_TECHNICAL.m
+         d).
+         а (`TODO`/пусто).лизовано · 🟡 частично/плейсхолдер · 🚧 заглушк
+       7 
+       9 ---
+      10 ## 1. Обзор архитектуры
+     … +590 lines (ctrl+o to expand)
+
+● Now the frontend technical doc — full breakdown of the merged ui/app.py: auth,
+  HTTP layer, role-gating, every page, data adapters, and the page↔endpoint
+  matrix:
+
+● Write(docs\current_state\03_FRONTEND_TECHNICAL.md)
+  ⎿  Wrote 274 lines to docs\current_state\03_FRONTEND_TECHNICAL.md
+         стояние)ps Platform — Техническое описание фронтенда (текущее со
+       2 
+         ерфейса (`ui/app.py`, Streamlit).ый разбор объединённого веб-инт
+       4 > Бизнес-функционал — в [`01_BUSINESS_AND_FEATURES.md`](01_BUSIN
+       5 > бэкенд — в [`02_BACKEND_TECHNICAL.md`](02_BACKEND_TECHNICAL.md
+         ).
+         а упрощена · 🚧 честная заглушка (без фейк-данных).альный, логик
+       7 
+       9 ---
+      10 ## 1. Обзор и происхождение
+     … +373 lines (ctrl+o to expand)
+
+● Готово. Сначала причесал устаревшие :8000 (локальный путь) в HANDOFF.md —
+  теперь там :8200 + врезка с объяснением про winnat; Docker-путь в README
+  остался на 8000 (он корректен). Затем создал новую директорию
+  docs/current_state/ с тремя подробными документами.
+
+  Что создано
+
+  docs/current_state/
+
+  1. 01_BUSINESS_AND_FEATURES.md — бизнес-логика и функционал «как есть»:
+    - что за продукт, роли (DS/DE/MLSecOps/Product/CEO) и клиренс, жизненный
+  цикл актива и гейты G0–G7 со статусами;
+    - реализованный функционал по фичам (аутентификация, RBAC,
+  кабинет+MLflow-токен, изоляция/приватность в MLflow, security check+шаринг,
+  Audit Trail, запуск гейтов по кнопке, админка, реестр-чтение, GRC-карта,
+  дашборд);
+    - честный список заглушек (verify, реестр в БД, находки, деплой/approve,
+  паспорт, CI-логи, MinIO, рантайм-метрики);
+    - сквозные рабочие сценарии (A–E), таблица закрытых угроз, ограничения,
+  запуск.
+  2. 02_BACKEND_TECHNICAL.md — техника бэка:
+    - архитектура, стек, структура, полная таблица env-переменных;
+    - разбор каждого модуля core/* (db с полной схемой 11 таблиц и hash-chain,
+  identity/JWT/RBAC/клиренс, mlflow_utils, security_check-плейсхолдер,
+  model_card, storage);
+    - построчная логика auth-прокси (штамп owner, фильтрация видимости, 403,
+  ограничения);
+    - полная карта всех эндпоинтов (реальные ✅ и заглушки 🚧), RBAC-хелперы,
+  интеграция с CI/гейтами;
+    - запуск/порты (+ почему 8200), ключевые решения по безопасности, сводка
+  TODO.
+  3. 03_FRONTEND_TECHNICAL.md — техника фронта:
+    - происхождение (слияние) и 3 решения, стек, запуск/env, архитектура файла;
+    - аутентификация в UI, HTTP-слой и политика «real-data-first + честные
+  заглушки», ролевой гейтинг страниц;
+    - постраничный разбор всех 14 разделов (что показывает, какой эндпоинт,
+  статус, адаптеры);
+    - матрица «страница → эндпоинт → статус», UI-хелперы/стиль, ограничения, как
+  тестировалось.
+
+  Документы перекрёстно ссылаются друг на друга, используют единую легенду
+  статусов (✅ работает / 🟡 частично / 🚧 заглушка) и описывают именно текущее
+  слитое состояние (бэкенд A + гейты B + объединённый UI).
+
+  Хочешь — добавлю в docs/00_INDEX.md ссылку на эту новую папку, либо нарисую
+  mermaid-схему архитектуры прямо в 02/03 для наглядности.
+
+✻ Worked for 11m 51s
+
+※ recap: Goal: merge the second dev's frontend onto your real backend and document the project. Done: UI merged with real login, the 8000→8200 port fix via start.cmd, and three docs in docs/current_state/. Next: optionally link the new docs in docs/00_INDEX.md. (disable recaps in /config)
+
+> /context   ⎿  Context Usage
+     ⛀ ⛁ ⛁ ⛀ ⛀ ⛀ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   Opus 4.8
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   claude-opus-4-8
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   326.2k/1m tokens (33%)
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ 
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: 2.8k tokens (0.3%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: 12.2k tokens (1.2%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Custom agents: 148 tokens (0.0%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Memory files: 159 tokens (0.0%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Skills: 1.3k tokens (0.1%)
+                                               ⛁ Messages: 311.3k tokens (31.1%)
+                                               ⛶ Free space: 672.1k (67.2%)
+
+     Custom agents · /agents
+
+     Project
+     └ context-consultant: 148 tokens
+
+     Memory files · /memory
+     └ ~.claude\projects\C--Users-Kolya-Desktop-------------MlSecOps\memory\MEMORY.md: 159 tokens
+
+     Skills · /skills
+
+     Built-in
+     ├ claude-api: ~250 tokens
+     ├ update-config: ~240 tokens
+     ├ code-review: ~130 tokens
+     ├ schedule: ~130 tokens
+     ├ run: ~120 tokens
+     ├ loop: ~110 tokens
+     ├ verify: ~90 tokens
+     ├ keybindings-help: ~80 tokens
+     ├ fewer-permission-prompts: ~60 tokens
+     ├ simplify: ~60 tokens
+     ├ security-review: ~30 tokens
+     ├ init: ~20 tokens
+     └ review: < 20 tokens
+
+      Suggestions
+      i File reads using 66.6k tokens (7%) → save ~20k
+        If you are re-reading files, consider referencing earlier reads. Use offset/limit for large files.
+
+> /context 
+  ⎿  Context Usage
+     ⛀ ⛁ ⛁ ⛀ ⛀ ⛀ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   Opus 4.8
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   claude-opus-4-8
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   326.2k/1m tokens (33%)
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ 
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: 2.8k tokens (0.3%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: 12.2k tokens (1.2%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Custom agents: 148 tokens (0.0%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Memory files: 159 tokens (0.0%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Skills: 1.3k tokens (0.1%)
+                                               ⛁ Messages: 313.9k tokens (31.4%)
+                                               ⛶ Free space: 669.5k (66.9%)
+
+     Custom agents · /agents
+
+     Project
+     └ context-consultant: 148 tokens
+
+     Memory files · /memory
+     └ ~.claude\projects\C--Users-Kolya-Desktop-------------MlSecOps\memory\MEMORY.md: 159 tokens
+
+     Skills · /skills
+
+     Built-in
+     ├ claude-api: ~250 tokens
+     ├ update-config: ~240 tokens
+     ├ code-review: ~130 tokens
+     ├ schedule: ~130 tokens
+     ├ run: ~120 tokens
+     ├ loop: ~110 tokens
+     ├ verify: ~90 tokens
+     ├ keybindings-help: ~80 tokens
+     ├ fewer-permission-prompts: ~60 tokens
+     ├ simplify: ~60 tokens
+     ├ security-review: ~30 tokens
+     ├ init: ~20 tokens
+     └ review: < 20 tokens
+
+      Suggestions
+      i File reads using 66.6k tokens (7%) → save ~20k
+        If you are re-reading files, consider referencing earlier reads. Use offset/limit for large files.
+
+> /effort                                                                       
+  ⎿  Set effort level to max (this session only): Maximum capability with deepest
+     reasoning
+
+> Ты разбираешься во всем проекте. Давай обсудим какой функционал уже есть и    
+  что делать дальше? Также я заметил пару моментов, которые надо пофиксить: 1)  
+  Очень долгий отклик на фронте (мб долгий бек)                                 
+  2) После прохождений секьюрити чека артефакт не появился в реестре (вообще    
+  там все на заглушках, но если уж статус ОК, то в реестре должно появлятся)    
+  3) Надо в дашборд добавить (видимо пока что с заглушкой) вызовы на Human      
+  Approve                                                                       
+  4) В "мои артефакты" не очень понятно что за кнопка "поделится"               
+  5) Реестр не обновляется, а также при прохождении security check не выводится 
+  последовательность гейтов и не выводятся эти логи (надо продумать как это     
+  сделать лучше всего и компактно с точки зрения UI)                            
+  6) Вкладка верификация очень странная и ее можно убрать                       
+  7) В реестре должны быть кнопочки напротив артефактов выкатить в прод (пока   
+  что с заглушками)                                                             
+  8) Фильтр в истории сделан очень странно. Надо НЕ по поисковой строке делать. 
+  А по каким нибудь тегам, уровням и тд                                         
+  9) Находки - тоже странно называется и не понятно что за логика UI            
+  10) Вкладка инструменты тоже очень странная и должна выглядеть и работать по  
+  другому.  Надо чтобы было примерно так: есть реестр артефактов (свалка/ок/не  
+  прошли проверку)  должна быть возможность "открыть артефакт" и открывается    
+  страничка артефакта с инфой про него - где выводятся все гейты цепочкой -     
+  можно открыть какой то отдельный гейт и перезапустить или просмотреть логи. И 
+  должна быть кнопка перепройти секьюрити чек.                                  
+  11) CI/CD логи не должны быть отдельной вкладкой. Как смотреть их я писал     
+  выше.                                                                         
+  12) Деплой/Approve тоже должен быть из реестра - эту вкладку можно убрать     
+                                                                                
+  Пока что я заметил только такие недостатки, но их может быть больше. Сейчас   
+  обдумай                                                                       
+    план работы, задай мне уточняющие вопросы и начнем работу.                  
+
+● Отличный список — он на самом деле складывается в одну большую идею, а не 12
+  разрозненных правок. Давай сверим понимание, потом задам 4 вопроса и начнём.
+
+  Главный вывод: артефакт — центр всего, а «Реестр» — его хаб
+
+  Сейчас функциональность размазана по вкладкам (Верификация, Инструменты, CI/CD
+  логи, Деплой, Находки), и они дублируют друг друга. Ты фактически описываешь
+  артефакто-центричную модель: есть реестр артефактов по зонам (свалка / OK / не
+  прошли + прод), открываешь артефакт → его страница с цепочкой гейтов, где
+  можно перезапустить гейт, посмотреть логи, перепройти security check и (для
+  MLSecOps) выкатить в прод. Это схлопывает 4–5 вкладок в одну связку Реестр → 
+  Страница артефакта.
+
+  Как 12 пунктов ложатся в план
+
+  #: 1
+  Замечание: Долгий отклик
+  Что делаю: Профилирую; кэширую GET-ы (st.cache_data TTL≈5с), /auth/me не на
+    каждый ререндер, fast-fail когда MLflow лежит. Гипотеза: Streamlit
+  ререндерит
+     всё на каждый клик → куча синхронных запросов + ожидание MLflow
+  ────────────────────────────────────────
+  #: 2
+  Замечание: После check артефакт не в реестре
+  Что делаю: Реестр строю из реальных артефактов; check_status=passed → попадает
+
+    в зону OK
+  ────────────────────────────────────────
+  #: 3
+  Замечание: Дашборд: вызовы Human Approve
+  Что делаю: Панель «Ожидают Approve» (данные — из статусов артефактов; см. Q2)
+  ────────────────────────────────────────
+  #: 4
+  Замечание: Непонятна кнопка «Поделиться»
+  Что делаю: Переименую + поясняющий текст: «Открыть доступ другим ролям после
+    проверки»
+  ────────────────────────────────────────
+  #: 5
+  Замечание: Реестр не обновляется; не видно цепочку гейтов и логи
+  Что делаю: Инвалидация кэша после действий; компактный компонент «цепочка 
+    гейтов» (G1→…→G5 пилюлями, раскрытие = логи) на странице артефакта
+  ────────────────────────────────────────
+  #: 6
+  Замечание: «Верификация» странная
+  Что делаю: Убираю вкладку; её смысл уходит в «перепройти security check» на
+    странице артефакта
+  ────────────────────────────────────────
+  #: 7
+  Замечание: В реестре кнопки «выкатить в прод»
+  Что делаю: Кнопка на строке/странице артефакта (RBAC: MLSecOps; HITL для HIGH)
+  ────────────────────────────────────────
+  #: 8
+  Замечание: Фильтр истории по строке
+  Что делаю: Заменяю на фильтры по тегам: action (тип события), result
+    (ok/blocked/…), роль/актор
+  ────────────────────────────────────────
+  #: 9
+  Замечание: «Находки» — имя и логика
+  Что делаю: Переименовать + переосмыслить (см. Q4)
+  ────────────────────────────────────────
+  #: 10
+  Замечание: «Инструменты» переделать
+  Что делаю: Становится частью Реестра: зоны → открыть артефакт → цепочка гейтов
+
+    → открыть гейт (логи/перезапуск) → перепройти security check
+  ────────────────────────────────────────
+  #: 11
+  Замечание: CI/CD логи — не отдельная вкладка
+  Что делаю: Убираю; логи смотрим в гейте на странице артефакта
+  ────────────────────────────────────────
+  #: 12
+  Замечание: Деплой/Approve из реестра
+  Что делаю: Убираю вкладку; действия — на странице артефакта
+
+  Навигация: было → станет
+
+  Было (14): Дашборд · Кабинет · Мои артефакты · ~~Верификация~~ · Реестр ·
+  Паспорт · История · ~~Находки~~ · ~~Инструменты~~ · ~~CI/CD логи~~ ·
+  ~~Деплой/Approve~~ · Пользователи · Карта покрытия · Контур
+
+  Станет (~9): Дашборд · Кабинет · Мои артефакты · Реестр (хаб + страница 
+  артефакта) · История · Сработки (переим.) · Пользователи · Карта покрытия ·
+  Контур
+  (Паспорт сливаю в страницу артефакта — это и есть паспорт: инфо + lineage +
+  гейты.)
+
+  Предлагаемые фазы
+
+  - Фаза 0 — перформанс (быстро, отдельно): кэш + меньше запросов. Чтобы дальше
+  работать комфортно.
+  - Фаза 1 — Реестр + страница артефакта (ядро): зоны, компонент «цепочка
+  гейтов», логи, перезапуск гейта, перепройти check. Убрать
+  Верификация/Инструменты/CI-CD.
+  - Фаза 2 — деплой/HITL из реестра + дашборд Approve (точки 3,7,12).
+  - Фаза 3 — мелочи UX: история-фильтры (8), копия «Поделиться» (4),
+  переименование «Находки» (9).
+
+  «Что дальше» по-крупному (за рамками этих 12): реальная логика гейтов вместо
+  плейсхолдера, реальный CI-деплой, рантайм G6/G7 — это уже следующий эшелон.
+
+  Прежде чем кодить — 4 развилки, которые определяют архитектуру:
+
+● User answered Claude's questions:
+  ⎿  · Делаем «Реестр» центральным хабом артефактов: реальные MLflow-раны, 
+     разложенные по зонам по статусу проверки (не проверен = свалка, passed = 
+     OK, failed = не прошли, + прод). Видимость: видит ли MLSecOps ВСЕ 
+     артефакты, попавшие в пайплайн (после запуска security check), даже не 
+     расшаренные владельцем? →  Реестр из artifact_acl+MLflow по зонам. MLSecOps
+     как ревьюер видит все артефакты, на которых запускали security check 
+     (приватные черновики ДО проверки — только владельцу). Без новых таблиц. И 
+     не забудь сделать фильтр по реестру по тегам и по статусам
+     · Кнопки «выкатить в прод» и «Human Approve» — реального CI-деплоя пока 
+     нет. Двигать ли при этом СТАТУС артефакта по-настоящему (персист в БД: 
+     passed → ожидает approve → approved → prod), чтобы поток был виден в 
+     реестре и на дашборде? → Давай пока что на заглушках, но при этом 
+     передвижение артефактов должно быть видно. И кстати подумай о том, где эти 
+     артефакты физически лежат. Потом они должны будут хранится на каком нибудь 
+     S3 и контролироваться через ml flow и через наш сервис. 
+     · На странице артефакта — цепочка гейтов (п.5,10). Перестроить 
+     security_check, чтобы он возвращал единую цепочку G1→G2→G3→G4→G5 (логика 
+     пока плейсхолдер, но структура реальная) с per-gate статусом, логами и 
+     кнопками «перезапустить гейт»/«логи»? → Вообще конфугураци гейтов должна 
+     контролироваться yml файлами. И лучше всего будет, если ты щас очень 
+     простые гейты напишешь в yml файлах, но сами гейты ничего особо делать не 
+     будут. и будут только выдавать pass
+     · «Находки» переименовать и переосмыслить (п.9). Что это и как назвать? → 
+     «Инциденты», авто из гейтов
+
+● Отлично, всё зафиксировал. Ключевые вводные из ответов:
+  - Реестр из artifact_acl+MLflow по зонам; MLSecOps видит все артефакты, на
+  которых запускали security check; приватные черновики ДО проверки — только
+  владельцу; без новых таблиц; фильтры по тегам и статусам.
+  - Деплой/Approve — на заглушках, но движение артефакта по зонам персистится и 
+  видно (passed → ожидает approve → approved → prod). Плюс продумать физическое
+  хранение (сейчас — artifact store MLflow; будущее — WORM-копия в S3/MinIO,
+  контроль через MLflow + наш сервис).
+  - Конфигурация гейтов — через YAML; гейты простые, просто отдают PASS.
+  - «Находки» → «Инциденты», авто из упавших гейтов.
+
+  Заведу трекинг задач и начну с бэкенд-фундамента (от него зависит фронт).
+  Загружаю инструменты задач:
+
+● План разбит на 9 задач. Начинаю Фазу 1 (бэкенд-фундамент). Задача #1 —
+  YAML-конфиг гейтов + раннер.
+
+● Write(config\gates.yml)
+  ⎿  Wrote 59 lines to config\gates.yml
+         ь G0–G7).gates.yml — конфигурация цепочки security-гейтов (модел
+       3 # Цепочка прогоняется при security check артефакта (см. core/gat
+         es_pipeline.py).
+         результат из поля `result`ЛЕЙСХОЛДЕР: каждый гейт просто отдаёт 
+       5 # (по умолчанию pass) + текстовые логи. Структура и конфиг — реа
+       6 # чтобы «включить» настоящий гейт, в core/gates_pipeline.run_gat
+       7 # src/gates/<...> или docker-образа, а здесь правится только кон
+         фиг.
+       9 # Поля гейта:
+      10 #   id          — идентификатор (G1..G5)
+     … +61 lines (ctrl+o to expand)
+
+● Write(core\gates_pipeline.py)  ⎿  Wrote 114 lines to core\gates_pipeline.py
+         security-гейтов.peline.py — конфигурируемый через YAML пайплайн 
+       3 Цепочка гейтов задаётся в `config/gates.yml` (путь переопределяе
+         тся env GATES_CONFIG).
+          из конфига (`result`, ПЛЕЙСХОЛДЕР: каждый гейт возвращает исход
+       5 по умолчанию PASS) + текстовые логи. Структура реальная — под бу
+       6 дущую настоящую логику.
+         ная точка, где плейсхолдерейты: функция `run_gate()` — единствен
+       8 заменяется на реальный вызов (например, `src/gates/<name>` или d
+       9 ocker-образ гейта).
+      10 Используется:
+     … +138 lines (ctrl+o to expand)
+
+● YAML-конфиг и раннер готовы. Добавлю pyyaml в зависимости (хотя есть
+  graceful-fallback) и перепишу security_check на пайплайн (задача #2):
+
+● Update(requirements.txt)
+  ⎿  Added 1 line
+      13  requests
+      14  python-dotenv
+      15  python-multipart
+      16 +pyyaml          # конфиг цепочки гейтов (config/gates.yml); обы
+         +чно тянется mlflow                                             
+      17  
+      18  # Auth / Identity (локальный JWT-issuer + хэш паролей)
+      19  bcrypt
+
+● Write(core\security_check.py)
+  ⎿  Added 29 lines, removed 39 lines
+       1 -"""core/security_check.py — security check артефакта MLflow пер
+         -ед шарингом.                                                   
+       1 +"""core/security_check.py — security check артефакта MLflow (це
+         +почка гейтов).                                                 
+       2  
+       3 -⚠️ ПЛЕЙСХОЛДЕР. Реальная логика гейтов (G0–G7) здесь НЕ реализов
+         -ана — это намеренно.                                           
+       4 -Сейчас модуль:                                                 
+       5 -  • даёт стабильный контракт результата (passed + список провер
+         -ок + debug),                                                   
+       6 -  • печатает дебаг-вывод (видно в консоли бэкенда, что проверка
+         - реально запускалась),                                         
+       7 -  • возвращает структуру, которую бэкенд кладёт в artifact_acl.
+         -check_detail и в findings.                                     
+       3 +Прогон конфигурируемой через YAML цепочки гейтов (см. config/ga
+         +tes.yml и core/gates_pipeline.py)                              
+       4 +на артефакте (MLflow run = «сессия разработки»). СЕЙЧАС логика 
+         +гейтов — ПЛЕЙСХОЛДЕР (гейты                                    
+       5 +отдают PASS из конфига) + текстовые логи; структура результата 
+         +реальная.                                                      
+       6  
+       9 -Запускается ТОЛЬКО по кнопке из ЛК нашего сервиса (не из IDE/но
+         -утбука): разработчик                                           
+      10 -работает в MLflow, артефакты подтягиваются в сервис, и уже там 
+         -жмётся «Проверить».                                            
+       7 +Запускается ТОЛЬКО по кнопке из нашего сервиса (страница артефа
+         +кта / «Мои артефакты»), не из IDE.                             
+       8  
+      12 -Точки расширения (TODO, когда будем подключать настоящие гейты)
+         -:                                                              
+      13 -  • G4 Model Gate — формат весов (.safetensors/.onnx/.cbm/.txt;
+         - запрет .pkl/.joblib/.bin);                                    
+      14 -  • скан секретов в тегах/параметрах рана;                     
+      15 -  • PII-маркеры в датасете (по mlflow data inputs / Data Digest
+         -);                                                             
+      16 -  • lineage: обучено ли в CI, есть ли git_sha/dataset_hash.    
+       9 +Контракт результата:                                           
+      10 +    {                                                          
+      11 +      "passed": bool,                                          
+      12 +      "run_id": str,                                           
+      13 +      "gates": [ {id, name, description, status: PASS|FAIL|SKIP
+         +, severity, threats, detail, logs[]} ],                        
+      14 +      "placeholder": True,                                     
+      15 +      "debug": {...}                                           
+      16 +    }                                                          
+      17 +Бэкенд кладёт этот результат в artifact_acl.check_detail, а из 
+         +FAIL-гейтов заводит инциденты.                                 
+      18  """
+      19  from __future__ import annotations
+      20  
+      21  from typing import Optional
+      22  
+      22 -# Какие проверки «как будто» прогоняются (для наглядного вывода
+         - в UI/консоли).                                                
+      23 -_PLACEHOLDER_CHECKS = [                                        
+      24 -    ("model_format", "G4: формат весов (нет .pkl/.joblib/.bin)"
+         -),                                                             
+      25 -    ("secret_scan", "Скан секретов в тегах/параметрах рана"),  
+      26 -    ("pii_markers", "PII-маркеры в привязанном датасете"),     
+      27 -    ("lineage", "Lineage: git_sha / dataset_hash / trained_in_c
+         -i"),                                                           
+      28 -]                                                              
+      23 +from core import gates_pipeline                                
+      24  
+      25  
+      31 -def run_artifact_check(run_id: str, run_meta: Optional[dict] = 
+         -None) -> dict:                                                 
+      32 -    """Прогнать security check артефакта (ПЛЕЙСХОЛДЕР). Вернуть
+         - структурированный результат.                                  
+      26 +def run_artifact_check(run_id: str, run_meta: Optional[dict] = 
+         +None,                                                          
+      27 +                       only: Optional[list[str]] = None) -> dic
+         +t:                                                             
+      28 +    """Прогнать цепочку гейтов на артефакте. only=[ids] — подмн
+         +ожество (для rerun одного гейта).                              
+      29  
+      34 -    run_meta — плоский dict рана из mlflow_utils.get_run (теги/
+         -параметры/метрики), может быть None.                           
+      35 -    Возвращает: {passed, run_id, checks: [{check, status, detai
+         -l}], debug, placeholder: True}.                                
+      30 +    run_meta — плоский dict рана из mlflow_utils.get_run (owner
+         +/run_name/params/metrics), может быть None.                    
+      31      """
+      32      meta = run_meta or {}
+      38 -    checks = []                                                
+      39 -    for key, label in _PLACEHOLDER_CHECKS:                     
+      40 -        # ПЛЕЙСХОЛДЕР: пока всё «PASS», реальную логику подключ
+         -им позже.                                                      
+      41 -        checks.append({"check": key, "status": "PASS",         
+      42 -                       "detail": f"{label} — placeholder PASS"}
+         -)                                                              
+      43 -                                                               
+      44 -    passed = all(c["status"] == "PASS" for c in checks)        
+      33 +    pipe = gates_pipeline.run_pipeline(meta, only=only)        
+      34      result = {
+      46 -        "passed": passed,                                      
+      35 +        "passed": pipe["passed"],                              
+      36          "run_id": run_id,
+      48 -        "checks": checks,                                      
+      37 +        "gates": pipe["gates"],                                
+      38          "placeholder": True,
+      39          "debug": {
+      40              "experiment_id": meta.get("experiment_id"),
+     ...
+      42              "run_name": meta.get("run_name"),
+      43              "n_params": len(meta.get("params", {}) or {}),
+      44              "n_metrics": len(meta.get("metrics", {}) or {}),
+      56 -            "note": "Логика гейтов не реализована — это заглушк
+         -а для демонстрации потока.",                                   
+      45 +            "config": gates_pipeline.GATES_CONFIG,             
+      46 +            "note": "Логика гейтов не реализована — конфиг-driv
+         +en плейсхолдер (config/gates.yml).",                           
+      47          },
+      48      }
+      49  
+      60 -    # Дебаг-вывод в консоль бэкенда — видно, что проверка реаль
+         -но запускалась.                                                
+      50 +    # Дебаг-вывод в консоль бэка — видно, что проверка реально 
+         +запускалась.                                                   
+      51      print(f"[security_check] run_id={run_id} owner={meta.get('o
+          wner')} "
+      62 -          f"-> {'PASS' if passed else 'FAIL'} (placeholder)")  
+      63 -    for c in checks:                                           
+      64 -        print(f"[security_check]   {c['status']:4} {c['check']}
+         -: {c['detail']}")                                              
+      52 +          f"-> {'PASS' if result['passed'] else 'FAIL'} "      
+      53 +          f"({len(result['gates'])} gates, placeholder)")      
+      54 +    for g in result["gates"]:                                  
+      55 +        print(f"[security_check]   {g['status']:4} {g['id']} {g
+         +['name']}: {g['detail']}")                                     
+      56  
+      57      return result
+      58  
+      59  
+      60  if __name__ == "__main__":
+      70 -    # Минимальный пример/демо: прогон проверки на фейковом ране
+         -.                                                              
+      61      import json
+      62      fake = {"experiment_id": "1", "owner": "vasya", "run_name":
+           "demo-session",
+      63              "params": {"n_estimators": "50"}, "metrics": {"accu
+          racy": 0.93}}
+
+● Проверю, что пайплайн и security_check работают:
+
+● Bash(cd 'C:\Users\Kolya\Desktop\Новая папка\MlSecOps' && python -X utf8 -c "
+      from core import gates_pipeline as gp, security_check as sc…)
+  ⎿  pipeline passed= True gates= ['G1:PASS', 'G2:PASS', 'G3:PASS', 'G4:PAS
+     S', 'G5:PASS']
+     single G2= PASS
+     … +13 lines (ctrl+o to expand)
+
+● Пайплайн работает (G1–G5 PASS, логи, single-gate). Задачи #1, #2 — готовы.
+  Теперь #3 (движение по зонам) и #4 (инциденты) в core/db.py.
+  ⎿  You've hit your session limit · resets 4:20pm (Europe/Moscow)
+     /upgrade to increase your usage limit.
+
+✻ Crunched for 10m 14s

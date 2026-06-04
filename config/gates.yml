@@ -1,0 +1,59 @@
+# config/gates.yml — конфигурация цепочки security-гейтов (модель G0–G7).
+#
+# Цепочка прогоняется при security check артефакта (см. core/gates_pipeline.py).
+# СЕЙЧАС логика гейтов — ПЛЕЙСХОЛДЕР: каждый гейт просто отдаёт результат из поля `result`
+# (по умолчанию pass) + текстовые логи. Структура и конфиг — реальные, под будущую логику:
+# чтобы «включить» настоящий гейт, в core/gates_pipeline.run_gate подключается вызов
+# src/gates/<...> или docker-образа, а здесь правится только конфиг.
+#
+# Поля гейта:
+#   id          — идентификатор (G1..G5)
+#   name        — короткое имя (для UI)
+#   description — что проверяет (для UI)
+#   enabled     — участвует ли в пайплайне
+#   severity    — severity инцидента при FAIL (critical|high|medium|low)
+#   threats     — какие угрозы закрывает (для трассировки в UI)
+#   result      — плейсхолдер-исход: pass|fail|skip (по умолчанию pass)
+
+version: 1
+
+pipeline:
+  - id: G1
+    name: Data
+    description: "Схема, баланс классов (отрава), PII, prompt-injection"
+    enabled: true
+    severity: high
+    threats: ["#1", "#2", "#11", "#15"]
+    result: pass
+
+  - id: G2
+    name: Code
+    description: "Секреты (gitleaks), CVE (pip-audit), опасный код (bandit)"
+    enabled: true
+    severity: critical
+    threats: ["#8", "#10"]
+    result: pass
+
+  - id: G3
+    name: Supply
+    description: "Typosquatting, пиннинг версий, доверенный источник"
+    enabled: true
+    severity: high
+    threats: ["#9", "#3"]
+    result: pass
+
+  - id: G4
+    name: Model
+    description: "Формат весов (анти-pickle), скан весов, SHA-256, подпись"
+    enabled: true
+    severity: critical
+    threats: ["#3", "#4", "#26"]
+    result: pass
+
+  - id: G5
+    name: Registry
+    description: "Паспорт, lineage (данные-код-модель), валидность Tier"
+    enabled: true
+    severity: medium
+    threats: ["#20", "#23"]
+    result: pass
