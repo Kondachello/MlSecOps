@@ -12,7 +12,7 @@ import os
 
 import requests
 
-BACKEND = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
+BACKEND = os.getenv("BACKEND_URL", "http://127.0.0.1:8200")
 USER = os.getenv("SMOKE_USER", "msecops")
 PASSWORD = os.getenv("SMOKE_PASSWORD", "admin-pass")
 

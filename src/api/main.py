@@ -470,6 +470,11 @@ if app:
         """История событий (Audit Trail, новые сверху)."""
         return {"events": db.list_events(limit)}
 
+    @app.get("/api/v1/events/verify_chain")
+    def events_verify_chain():
+        """Проверить целостность hash-chain Audit Trail → {ok, broken_at, count} (угроза #24)."""
+        return db.verify_chain()
+
     @app.get("/api/v1/registry")
     def registry():
         return {"models": [], "datasets": []}  # TODO

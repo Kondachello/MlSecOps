@@ -34,7 +34,7 @@ DEV_USER = "kolya1"
 DEV_PASSWORD = "123"
 EXPERIMENT = f"{DEV_USER}_research"     # «аккаунт»/эксперимент разработчика
 
-BACKEND = os.getenv("GATEKEEPER_URL", "http://localhost:8000")
+BACKEND = os.getenv("GATEKEEPER_URL", "http://localhost:8200")
 
 
 def login() -> dict:

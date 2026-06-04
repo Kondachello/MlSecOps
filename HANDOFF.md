@@ -143,14 +143,14 @@ SQLite (дев), MinIO (S3, прод), MLflow (трекинг+реестр), Red
   **MLflow раны** (таблица из `/api/v1/mlflow/runs` + ссылка на MLflow UI),
   **Сканеры** (`/ci/trigger`), **История событий** (`/events`),
   **Админка** (только MLSecOps: назначение ролей, создание юзеров, выдача доступа).
-- Все запросы с `Authorization: Bearer`. Дефолт `GATEKEEPER_URL=http://localhost:8000`.
+- Все запросы с `Authorization: Bearer`. Дефолт `GATEKEEPER_URL=http://localhost:8200`.
 
 ### `infra/seed_admin.py` — bootstrap первого админа ✅
 - Создаёт `msecops` + роль MLSecOps (идемпотентно). Пароль из `BOOTSTRAP_ADMIN_PASSWORD` (дефолт `admin-pass`).
 - Запуск: `python -m infra.seed_admin`.
 
 ### `infra/run_local.ps1` — запуск всего дев-стенда (Windows) ✅
-- Поднимает в 3 окнах: MLflow (:5000), backend (:8000), Streamlit (:8501) + сидит админа.
+- Поднимает в 3 окнах: MLflow (:5000), backend (:8200), Streamlit (:8501) + сидит админа.
 - MLflow-данные кладёт в `%USERPROFILE%\mlsec_mlflow` (ВНЕ репо — см. урок ниже).
 
 ### Тесты / примеры ✅
@@ -184,8 +184,11 @@ SQLite (дев), MinIO (S3, прод), MLflow (трекинг+реестр), Red
 # либо старый способ:
 powershell -ExecutionPolicy Bypass -File infra\run_local.ps1
 ```
-Поднимет: MLflow :5000, backend :8000 (`/docs` — Swagger), UI :8501. Остановить: `.\infra\stop.cmd`.
+Поднимет: MLflow :5000, backend :8200 (`/docs` — Swagger), UI :8501. Остановить: `.\infra\stop.cmd`.
 Админ по умолчанию: **msecops / admin-pass**.
+> Порт бэка локально — **8200**, НЕ 8000: на Windows с Hyper-V/WSL2/Docker порт 8000 часто
+> попадает в зарезервированный winnat-диапазон (7904–8003) → uvicorn падает с `WinError 10013`.
+> В Docker остаётся 8000 (внутри контейнеров резерв хоста не действует).
 
 ### Запуск вручную (3 терминала)
 ```powershell
@@ -196,7 +199,7 @@ python -X utf8 -m mlflow server --backend-store-uri "sqlite:///C:/Users/<USER>/m
   --artifacts-destination "file:///C:/Users/<USER>/mlsec_mlflow/artifacts" --host 127.0.0.1 --port 5000 --workers 1
 # 2) backend
 $env:DB_BACKEND="sqlite"; $env:MLFLOW_UPSTREAM_URL="http://127.0.0.1:5000"
-python -X utf8 -m uvicorn src.api.main:app --host 127.0.0.1 --port 8000
+python -X utf8 -m uvicorn src.api.main:app --host 127.0.0.1 --port 8200
 # 3) UI
 python -X utf8 -m streamlit run ui/app.py --server.port 8501
 ```
@@ -482,12 +485,12 @@ def can_view_artifact(acl, username, roles) -> bool:
 (ExecutionPolicy блокирует). `.cmd`-батники ExecutionPolicy НЕ касается — запускаются и из
 PowerShell, и из cmd, и двойным кликом.
 
-- **`infra\start.cmd`** — сид админа + три окна: MLflow `:5000`, backend `:8000`, Streamlit `:8501`.
+- **`infra\start.cmd`** — сид админа + три окна: MLflow `:5000`, backend `:8200`, Streamlit `:8501`.
   Между MLflow и остальными `timeout /t 3`. MLflow-данные → `%USERPROFILE%\mlsec_mlflow`
   (чистый путь; `file:///`-URI с прямыми слэшами через `set "X=%VAR:\=/%"`). Env (DB_BACKEND,
   MLFLOW_UPSTREAM_URL, GATEKEEPER_URL, APP_DEBUG, BOOTSTRAP_ADMIN_PASSWORD) ставится в родителе,
   дочерние окна наследуют. Запуск: `.\infra\start.cmd`.
-- **`infra\stop.cmd`** — гасит слушателей на портах 8000/5000/8501 (`netstat -ano | findstr` →
+- **`infra\stop.cmd`** — гасит слушателей на портах 8200/5000/8501 (`netstat -ano | findstr` →
   `taskkill /F /PID`). Запуск: `.\infra\stop.cmd`.
 - **КРИТИЧНО — оба файла ЧИСТО ASCII, без BOM** (см. урок §9.12.1). `run_local.ps1` оставлен как есть.
 
