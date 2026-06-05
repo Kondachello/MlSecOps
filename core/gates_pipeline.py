@@ -1,114 +1,183 @@
-"""core/gates_pipeline.py — конфигурируемый через YAML пайплайн security-гейтов.
+"""core/gates_pipeline.py — фасад между бэкендом и реальным gates-runner-ом.
 
-Цепочка гейтов задаётся в `config/gates.yml` (путь переопределяется env GATES_CONFIG).
-СЕЙЧАС логика гейтов — ПЛЕЙСХОЛДЕР: каждый гейт возвращает исход из конфига (`result`,
-по умолчанию PASS) + текстовые логи. Структура реальная — под будущую настоящую логику.
+Реализация гейтов живёт в `gates/` (см. gates/runner.py). Этот модуль:
+  • выбирает режим запуска: docker (через `docker compose exec gates-runner`)
+    или inline-Python (subprocess в текущем env), и парсит JSON из stdout;
+  • совместим со старым API: run_pipeline / run_single (вызывается из security_check).
 
-Где подключать настоящие гейты: функция `run_gate()` — единственная точка, где плейсхолдер
-заменяется на реальный вызов (например, `src/gates/<name>` или docker-образ гейта).
-
-Используется:
-  • core/security_check.run_artifact_check — прогон всей цепочки на артефакте;
-  • бэкенд (rerun одного гейта) — через run_single().
+Режим: env GATES_EXEC_MODE = docker|inline|auto (default auto).
+  auto: пытаемся detect — если есть `docker compose ps gates-runner` → docker, иначе inline.
 """
 from __future__ import annotations
 
-import datetime as _dt
+import json
 import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+
+GATES_EXEC_MODE = os.getenv("GATES_EXEC_MODE", "auto").lower()
+GATES_COMPOSE_SERVICE = os.getenv("GATES_COMPOSE_SERVICE", "gates-runner")
+GATES_COMPOSE_FILE = os.getenv("GATES_COMPOSE_FILE",
+                                str(_REPO_ROOT / "infra" / "docker-compose.yml"))
+GATES_RUNNER_TIMEOUT = int(os.getenv("GATES_RUNNER_TIMEOUT", "300"))
+
+# Для совместимости со старыми импортами (security_check читал GATES_CONFIG).
 GATES_CONFIG = os.getenv("GATES_CONFIG", str(_REPO_ROOT / "config" / "gates.yml"))
 
-# Встроенный дефолт на случай, если YAML недоступен/PyYAML не установлен (graceful).
-_DEFAULT_PIPELINE: list[dict] = [
-    {"id": "G1", "name": "Data", "description": "Схема, баланс классов, PII, инъекции",
-     "enabled": True, "severity": "high", "threats": ["#1", "#2", "#11", "#15"], "result": "pass"},
-    {"id": "G2", "name": "Code", "description": "Секреты, CVE, опасный код",
-     "enabled": True, "severity": "critical", "threats": ["#8", "#10"], "result": "pass"},
-    {"id": "G3", "name": "Supply", "description": "Typosquatting, пиннинг, источник",
-     "enabled": True, "severity": "high", "threats": ["#9", "#3"], "result": "pass"},
-    {"id": "G4", "name": "Model", "description": "Формат весов, скан, SHA, подпись",
-     "enabled": True, "severity": "critical", "threats": ["#3", "#4", "#26"], "result": "pass"},
-    {"id": "G5", "name": "Registry", "description": "Паспорт, lineage, Tier",
-     "enabled": True, "severity": "medium", "threats": ["#20", "#23"], "result": "pass"},
-]
 
-
-def load_pipeline() -> list[dict]:
-    """Прочитать цепочку гейтов из YAML; при любой ошибке — встроенный дефолт."""
+# ─────────────────────────── выбор режима ──────────────────────────────
+def _docker_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
     try:
-        import yaml  # PyYAML (тянется mlflow); fallback ниже, если нет
-        with open(GATES_CONFIG, encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
-        gates = cfg.get("pipeline") or []
-        if gates:
-            return gates
+        r = subprocess.run(
+            ["docker", "compose", "-f", GATES_COMPOSE_FILE, "ps",
+             "--services", "--filter", "status=running"],
+            capture_output=True, text=True, timeout=10)
     except Exception:  # noqa: BLE001
-        pass
-    return _DEFAULT_PIPELINE
+        return False
+    return r.returncode == 0 and GATES_COMPOSE_SERVICE in r.stdout.splitlines()
 
 
-def _norm_status(value: str) -> str:
-    s = str(value or "pass").upper()
-    return s if s in ("PASS", "FAIL", "SKIP") else "PASS"
+def _resolve_mode() -> str:
+    if GATES_EXEC_MODE in ("docker", "inline"):
+        return GATES_EXEC_MODE
+    return "docker" if _docker_available() else "inline"
 
 
-def run_gate(gate: dict, run_meta: Optional[dict] = None) -> dict:
-    """Прогнать ОДИН гейт (ПЛЕЙСХОЛДЕР). Вернуть структурированный результат + логи.
+# ─────────────────────────── вызов runner-а ────────────────────────────
+def _build_args(run_id: str, *, only: Optional[list[str]],
+                from_gate: Optional[str]) -> list[str]:
+    args = ["--run-id", run_id]
+    if only:
+        args += ["--only", ",".join(only)]
+    if from_gate:
+        args += ["--from", from_gate]
+    return args
 
-    Точка расширения: здесь плейсхолдер (исход из конфига) заменяется реальной логикой гейта.
-    """
-    meta = run_meta or {}
-    gid = gate.get("id", "?")
-    name = gate.get("name", "")
-    status = _norm_status(gate.get("result", "pass"))
-    ts = _dt.datetime.now(_dt.timezone.utc).strftime("%H:%M:%S")
-    logs = [
-        f"[{ts}] [{gid} {name}] start (placeholder gate, config-driven)",
-        f"[{ts}] [{gid} {name}] target: run={meta.get('run_name') or meta.get('run_id') or '?'} "
-        f"owner={meta.get('owner', '?')}",
-        f"[{ts}] [{gid} {name}] checks: {gate.get('description', '')}",
-        f"[{ts}] [{gid} {name}] result = {status} (логика гейта пока не реализована)",
-    ]
+
+def _invoke_runner(run_id: str, *, only: Optional[list[str]],
+                   from_gate: Optional[str]) -> dict:
+    """Запустить gates.runner в выбранном режиме, вернуть распарсенный агрегат."""
+    mode = _resolve_mode()
+    runner_args = _build_args(run_id, only=only, from_gate=from_gate)
+
+    if mode == "docker":
+        # Долгоживущий контейнер gates-runner в compose; exec — не плодит контейнеры.
+        cmd = ["docker", "compose", "-f", GATES_COMPOSE_FILE, "exec", "-T",
+               GATES_COMPOSE_SERVICE,
+               "python", "-m", "gates.runner", *runner_args]
+    else:
+        cmd = [sys.executable, "-m", "gates.runner", *runner_args]
+
+    env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
+    try:
+        proc = subprocess.run(cmd, cwd=str(_REPO_ROOT), env=env, capture_output=True,
+                              text=True, timeout=GATES_RUNNER_TIMEOUT, encoding="utf-8",
+                              errors="replace")
+    except subprocess.TimeoutExpired:
+        return _runner_error_result(run_id, only, from_gate,
+                                    f"runner timeout (>{GATES_RUNNER_TIMEOUT}s)")
+    except FileNotFoundError as e:
+        return _runner_error_result(run_id, only, from_gate, f"runner not found: {e}")
+
+    stdout = proc.stdout or ""
+    stderr = proc.stderr or ""
+
+    # Извлечь JSON-блок между маркерами; runner печатает их даже на rc=1 (FAIL).
+    try:
+        from gates.runner import RESULT_BEGIN, RESULT_END
+    except Exception:  # noqa: BLE001
+        RESULT_BEGIN, RESULT_END = "===GATES_RESULT_BEGIN===", "===GATES_RESULT_END==="
+
+    if RESULT_BEGIN in stdout and RESULT_END in stdout:
+        chunk = stdout.split(RESULT_BEGIN, 1)[1].split(RESULT_END, 1)[0].strip()
+        try:
+            agg = json.loads(chunk)
+            # Прицепим короткий лог runner'а (для дебага в UI).
+            head_lines = [ln for ln in stdout.splitlines()
+                          if ln.startswith("[runner]")][:30]
+            agg.setdefault("debug", {})["runner_mode"] = mode
+            agg["debug"]["runner_log"] = head_lines
+            return agg
+        except json.JSONDecodeError as e:
+            return _runner_error_result(run_id, only, from_gate,
+                                        f"runner stdout JSON parse failed: {e}",
+                                        stdout_tail=stdout[-2000:], stderr_tail=stderr[-2000:])
+
+    return _runner_error_result(run_id, only, from_gate,
+                                f"runner did not emit result block (rc={proc.returncode})",
+                                stdout_tail=stdout[-2000:], stderr_tail=stderr[-2000:])
+
+
+def _runner_error_result(run_id: str, only, from_gate, message: str,
+                         stdout_tail: str = "", stderr_tail: str = "") -> dict:
+    """Сформировать FAIL-агрегат когда runner не смог стартовать/вернуть результат."""
     return {
-        "id": gid,
-        "name": name,
-        "description": gate.get("description", ""),
-        "status": status,
-        "severity": gate.get("severity", "medium"),
-        "threats": gate.get("threats", []),
-        "detail": f"{name}: {gate.get('description', '')} — placeholder {status}",
-        "logs": logs,
-        "placeholder": True,
+        "run_id": run_id,
+        "selected": only or ([from_gate] if from_gate else []),
+        "passed": False,
+        "gates": [{
+            "id": "RUNNER", "name": "Gates runner", "status": "FAIL",
+            "severity": "high", "threats": [], "description": "оркестратор гейтов",
+            "detail": message,
+            "logs": [message] +
+                    ([f"--- stdout tail ---\n{stdout_tail}"] if stdout_tail else []) +
+                    ([f"--- stderr tail ---\n{stderr_tail}"] if stderr_tail else []),
+            "evidence": {"runner_error": True},
+            "duration_ms": 0,
+        }],
+        "placeholder": False,
+        "debug": {"runner_error": message},
     }
 
 
-def run_pipeline(run_meta: Optional[dict] = None, only: Optional[list[str]] = None) -> dict:
-    """Прогнать цепочку (только enabled; only=[ids] — подмножество гейтов).
+# ─────────────────────────── публичный API (для security_check) ────────
+def run_pipeline(run_meta: Optional[dict] = None, only: Optional[list[str]] = None,
+                 from_gate: Optional[str] = None) -> dict:
+    """Прогнать цепочку гейтов на ране. run_meta.run_id ОБЯЗАТЕЛЕН.
 
-    Возвращает {"passed": bool, "gates": [<run_gate>...]}.
-    passed = ни один гейт не FAIL (SKIP не валит).
+    Совместимо с тем, что было: возвращает {passed, gates: [...]}; новое поле
+    `selected` показывает выбранные id (для UI).
     """
-    gates_cfg = [g for g in load_pipeline() if g.get("enabled", True)]
-    if only:
-        wanted = set(only)
-        gates_cfg = [g for g in gates_cfg if g.get("id") in wanted]
-    results = [run_gate(g, run_meta) for g in gates_cfg]
-    passed = all(r["status"] != "FAIL" for r in results)
-    return {"passed": passed, "gates": results}
+    meta = run_meta or {}
+    run_id = meta.get("run_id") or meta.get("runId")
+    if not run_id:
+        return _runner_error_result("", only, from_gate, "run_id обязателен для запуска гейтов")
+    agg = _invoke_runner(run_id, only=only, from_gate=from_gate)
+    return agg
 
 
 def run_single(gate_id: str, run_meta: Optional[dict] = None) -> Optional[dict]:
-    """Прогнать один гейт по id (для кнопки «перезапустить гейт»). None, если id неизвестен."""
-    for g in load_pipeline():
-        if g.get("id") == gate_id:
-            return run_gate(g, run_meta)
-    return None
+    """Перезапустить ОДИН гейт по id. None, если runner ничего не вернул."""
+    agg = run_pipeline(run_meta=run_meta, only=[gate_id])
+    gates = agg.get("gates") or []
+    return gates[0] if gates else None
+
+
+def load_pipeline() -> list[dict]:
+    """Список зарегистрированных гейтов (для UI/выпадашек). Совместимо со старым API."""
+    # Импортируем здесь, чтобы не тянуть gates/ когда оркестратор не нужен (тесты).
+    try:
+        from gates.base import GATE_REGISTRY, _ensure_gates_loaded, ordered_gate_ids
+        _ensure_gates_loaded()
+        return [{
+            "id": g.id, "name": g.name, "description": g.description,
+            "severity": g.severity, "threats": list(g.threats),
+            "enabled": True, "order": g.order,
+        } for g in sorted([GATE_REGISTRY[i] for i in ordered_gate_ids()],
+                          key=lambda s: s.order)]
+    except Exception:  # noqa: BLE001 — деградируем, если gates/ ещё не доступны
+        return []
 
 
 if __name__ == "__main__":
-    import json
-    demo = run_pipeline({"owner": "vasya", "run_name": "demo-session", "run_id": "run-abc"})
-    print(json.dumps(demo, ensure_ascii=False, indent=2))
+    # Дев-самопроверка: показать выбранный режим + список гейтов.
+    print(f"mode = {_resolve_mode()} (env GATES_EXEC_MODE={GATES_EXEC_MODE})")
+    for g in load_pipeline():
+        print(f"  {g['id']} {g['name']} (order {g['order']}, severity {g['severity']})")

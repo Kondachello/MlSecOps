@@ -1,59 +1,60 @@
-# config/gates.yml — конфигурация цепочки security-гейтов (модель G0–G7).
+# config/gates.yml — описание гейтов для UI (метаданные).
 #
-# Цепочка прогоняется при security check артефакта (см. core/gates_pipeline.py).
-# СЕЙЧАС логика гейтов — ПЛЕЙСХОЛДЕР: каждый гейт просто отдаёт результат из поля `result`
-# (по умолчанию pass) + текстовые логи. Структура и конфиг — реальные, под будущую логику:
-# чтобы «включить» настоящий гейт, в core/gates_pipeline.run_gate подключается вызов
-# src/gates/<...> или docker-образа, а здесь правится только конфиг.
+# Реальные реализации живут в gates/*.py (см. gates/__init__.py). Этот YAML — НЕ источник
+# истины для логики (его раньше использовал плейсхолдер), теперь это просто справочник,
+# отображаемый в UI «карта гейтов».
 #
-# Поля гейта:
-#   id          — идентификатор (G1..G5)
-#   name        — короткое имя (для UI)
-#   description — что проверяет (для UI)
-#   enabled     — участвует ли в пайплайне
-#   severity    — severity инцидента при FAIL (critical|high|medium|low)
-#   threats     — какие угрозы закрывает (для трассировки в UI)
-#   result      — плейсхолдер-исход: pass|fail|skip (по умолчанию pass)
+# Источник истины: gates.base.GATE_REGISTRY (заполняется декораторами @register_gate).
+# Бэкенд берёт оттуда (см. core.gates_pipeline.load_pipeline).
+#
+# Этот файл оставлен для:
+#   • документации (одно место где видно весь набор + угрозы);
+#   • возможности при желании отключить гейт из UI (поле enabled — пока не используется).
 
-version: 1
+version: 2
 
 pipeline:
-  - id: G1
+  - id: DATA
     name: Data
-    description: "Схема, баланс классов (отрава), PII, prompt-injection"
+    description: "PII (карты/email/СНИЛС), poison-колонки, доля null, схема"
     enabled: true
     severity: high
+    order: 10
     threats: ["#1", "#2", "#11", "#15"]
-    result: pass
+    impl: gates.g_data
 
-  - id: G2
-    name: Code
-    description: "Секреты (gitleaks), CVE (pip-audit), опасный код (bandit)"
+  - id: G0
+    name: Secrets
+    description: "Секреты в артефактах (gitleaks → regex fallback)"
     enabled: true
     severity: critical
+    order: 20
     threats: ["#8", "#10"]
-    result: pass
-
-  - id: G3
-    name: Supply
-    description: "Typosquatting, пиннинг версий, доверенный источник"
-    enabled: true
-    severity: high
-    threats: ["#9", "#3"]
-    result: pass
-
-  - id: G4
-    name: Model
-    description: "Формат весов (анти-pickle), скан весов, SHA-256, подпись"
-    enabled: true
-    severity: critical
-    threats: ["#3", "#4", "#26"]
-    result: pass
+    impl: gates.g0_secrets
 
   - id: G5
-    name: Registry
-    description: "Паспорт, lineage (данные-код-модель), валидность Tier"
+    name: Model scan
+    description: "Сканер весов: pickle opcode scan + whitelist безопасных форматов"
+    enabled: true
+    severity: critical
+    order: 30
+    threats: ["#3", "#4", "#26"]
+    impl: gates.g5_modelscan
+
+  - id: G7
+    name: Artifact sign
+    description: "SHA256 manifest + .sig артефакта (verify на promote)"
     enabled: true
     severity: medium
-    threats: ["#20", "#23"]
-    result: pass
+    order: 40
+    threats: ["#3", "#4", "#26"]
+    impl: gates.g7_sign
+
+  - id: G8
+    name: ML quality
+    description: "ONNX holdout accuracy / degenerate-predictor check"
+    enabled: true
+    severity: high
+    order: 50
+    threats: ["#17", "#20"]
+    impl: gates.g8_quality

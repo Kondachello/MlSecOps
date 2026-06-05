@@ -27,6 +27,18 @@ services:
     volumes:
       - miniodata:/data
 
+  # one-shot init: создаёт бакет `mlflow` (artifact-store для MLflow). Без него
+  # log_artifact падает с NoSuchBucket. Идемпотентно: `mc mb -p` не падает при дубле.
+  minio-init:
+    image: minio/mc:latest
+    depends_on: [minio]
+    entrypoint: >
+      sh -c "until mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:-change_me} ${MINIO_SECRET_KEY:-change_me};
+             do echo waiting for minio; sleep 2; done
+             && mc mb -p local/${MINIO_BUCKET_MLFLOW:-mlflow}
+             && echo MinIO bucket ready"
+    restart: "no"
+
   redis:
     image: redis:7
     ports: ["6379:6379"]
@@ -47,6 +59,10 @@ services:
       MLFLOW_S3_ENDPOINT_URL: ${MINIO_ENDPOINT:-http://minio:9000}
       AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-change_me}
       AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-change_me}
+      # MLflow 3.x по умолчанию режет запросы по Host-заголовку (DNS-rebinding защита).
+      # В compose-сети backend стучится на `mlflow:5000` → нужен этот hostname в allow-list.
+      # См. mlflow/server/fastapi_security.py:TrustedHostMiddleware. `*` ок т.к. MLflow внутри сети.
+      MLFLOW_SERVER_ALLOWED_HOSTS: "*"
     depends_on: [postgres, minio]
 
   authproxy:
@@ -60,34 +76,84 @@ services:
 
   backend:
     build: { context: .., dockerfile: infra/Dockerfile.backend }
-    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+    # Хост 8200, контейнер 8200. ВАЖНО на Windows: 8000 попадает в зарезервированный
+    # winnat-диапазон (7904-8003) → bind: forbidden. См. также dev-setup в HANDOFF §5.
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8200
     environment:
       - APP_DEBUG=${APP_DEBUG:-true}
+      # ВНУТРИ compose-сети MLflow доступен по имени сервиса, а не на 127.0.0.1 контейнера.
+      # core/mlflow_utils.py читает MLFLOW_UPSTREAM_URL для server-side доступа.
+      - MLFLOW_UPSTREAM_URL=http://mlflow:5000
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      # БД: используем существующую SQLite (mlsec_dev.db из host-репо через bind-mount /app).
+      # Все юзеры/ACL с dev-режима сохраняются. Postgres-режим — отдельный путь, не сейчас.
+      - DB_BACKEND=${DB_BACKEND:-sqlite}
+      # Бэкенд триггерит гейты через `docker compose exec gates-runner ...` — нужен путь к compose.
+      - GATES_EXEC_MODE=${GATES_EXEC_MODE:-auto}
+      - GATES_COMPOSE_FILE=/app/infra/docker-compose.yml
+      - GATES_COMPOSE_SERVICE=gates-runner
     env_file: [../.env]
-    ports: ["8000:8000"]
-    depends_on: [postgres, minio, redis, mlflow]
+    ports: ["8200:8200"]
+    volumes:
+      - ..:/app                                    # код + compose.yml для gates exec
+      - /var/run/docker.sock:/var/run/docker.sock  # чтобы бэкенд мог дергать gates-runner
+    depends_on: [postgres, minio, redis, mlflow, gates-runner]
 
   ui:
     build: { context: .., dockerfile: infra/Dockerfile.ui }
-    command: streamlit run ui/app.py --server.port 8501 --server.address 0.0.0.0
+    command: streamlit run ui/app.py --server.port 8501 --server.address 0.0.0.0 --server.runOnSave true
     environment:
-      - GATEKEEPER_URL=http://backend:8000
+      # Внутри сети compose — имя сервиса + внутренний порт backend (8200, см. выше).
+      - GATEKEEPER_URL=http://backend:8200
       - APP_DEBUG=${APP_DEBUG:-true}
     ports: ["8501:8501"]
+    # Bind-mount исходников: правки в ui/*.py подхватываются мгновенно (--runOnSave),
+    # не нужно пересобирать образ. Так же сделано в backend.
+    volumes:
+      - ..:/app
     depends_on: [backend]
 
   # Сервис инференса (G7) — пример; на каждую модель свой сервис.
+  # ВАЖНО на Windows: 8080 попадает в winnat-резерв (8004-8103) → bind: forbidden.
+  # Поэтому хост 8280 → контейнер 8280.
   inference:
     build: { context: .., dockerfile: infra/Dockerfile.backend }
-    command: uvicorn src.serve.app:app --host 0.0.0.0 --port 8080
+    command: uvicorn src.serve.app:app --host 0.0.0.0 --port 8280
     environment:
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-    ports: ["8080:8080"]
+    ports: ["8280:8280"]
     depends_on: [redis]
 
-  # CI: self-hosted GitHub Actions runner (джобы исполняются локально). TODO: образ/токен.
+  # gates-runner — долгоживущий контейнер с CLI-сканерами (gitleaks) и ML-стеком
+  # (onnxruntime/pandas/sklearn). Бэкенд по кнопке делает:
+  #   docker compose exec gates-runner python -m gates.runner --run-id X [--only G5|--from G5]
+  # Это и есть «локальный CI/CD через Docker»: гейты изолированы, образ один, состояние
+  # репо/артефактов прокидывается через bind-mount /app.
+  gates-runner:
+    container_name: mlsec-gates-runner
+    build: { context: .., dockerfile: infra/Dockerfile.gates }
+    working_dir: /app
+    volumes:
+      - ..:/app
+    environment:
+      MLFLOW_UPSTREAM_URL: http://mlflow:5000
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_S3_ENDPOINT_URL: ${MINIO_ENDPOINT:-http://minio:9000}
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-change_me}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-change_me}
+      DB_BACKEND: ${DB_BACKEND:-postgres}
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-mlsec}
+      POSTGRES_USER: ${POSTGRES_USER:-mlsec_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      PYTHONPATH: /app
+    depends_on: [mlflow, postgres, minio]
+    restart: unless-stopped
+
+  # CI: self-hosted GitHub Actions runner (опционально). TODO: образ/токен.
   ci-runner:
     image: myoung34/github-runner:latest
+    profiles: ["ci"]            # поднимается только при `docker compose --profile ci up`
     environment:
       - REPO_URL=https://github.com/${GITHUB_REPO:-org/mlsecopus}
       - RUNNER_NAME=mlsec-local

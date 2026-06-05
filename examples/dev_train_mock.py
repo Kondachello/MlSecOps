@@ -30,10 +30,10 @@ os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "2")
 import requests
 
 # ─────────────────────────── НАСТРОЙКИ ───────────────────────────
-DEV_USER = "msecops"            # должен существовать и иметь роль DS/DE/MLSecOps
-DEV_PASSWORD = "admin-pass"
+DEV_USER = "kolya1"            # должен существовать и иметь роль DS/DE/MLSecOps
+DEV_PASSWORD = "123"
 BACKEND = os.getenv("GATEKEEPER_URL", "http://localhost:8200")
-EXPERIMENT = f"{DEV_USER}_demo"     # эксперимент = «проект» разработчика
+EXPERIMENT = f"{DEV_USER}_URA"     # эксперимент = «проект» разработчика
 MODEL_NAME = "demo_model"           # имя в Model Registry; под ним копятся ВЕРСИИ
 PARAMS_C = [0.01, 0.1, 1.0]         # три прогона → три версии модели (v1, v2, v3)
 

@@ -396,8 +396,14 @@ if app:
         return {"status": "ok", **res, "run_name": run_name}
 
     @app.post("/api/v1/artifacts/{run_id}/check")
-    def artifact_check(run_id: str, request: Request):
-        """Запустить security check артефакта (ПЛЕЙСХОЛДЕР). Только владелец. Пишет статус+событие."""
+    def artifact_check(run_id: str, request: Request,
+                       from_gate: Optional[str] = None):
+        """Запустить security check артефакта. Только владелец. Пишет статус+событие.
+
+        Query `?from_gate=G5` — рестарт цепочки с указанного гейта до конца. Цепочка
+        мёржится с предыдущим check_detail (гейты до точки рестарта сохраняются).
+        Без `from_gate` — полная цепочка (как раньше).
+        """
         user = _current_user(request)
         acl, meta = _ensure_artifact(run_id)
         if acl is None:
@@ -408,20 +414,30 @@ if app:
             raise HTTPException(403, "только владелец артефакта может запускать проверку")
         from core import security_check
         db.set_check_status(run_id, "pending")
-        result = security_check.run_artifact_check(run_id, meta)
+        result = security_check.run_artifact_check(run_id, meta, from_gate=from_gate)
+        # Если рестарт с точки — смёрджить с предыдущей цепочкой.
+        if from_gate:
+            prev = acl.get("check_detail") or {}
+            prev_gates = {g["id"]: g for g in (prev.get("gates") or [])}
+            for g in result.get("gates", []):
+                prev_gates[g["id"]] = g
+            merged = list(prev_gates.values())
+            merged.sort(key=lambda g: g.get("id"))
+            result["gates"] = merged
+            result["passed"] = all(g.get("status") != "FAIL" for g in merged)
         status = "passed" if result["passed"] else "failed"
         db.set_check_status(run_id, status, result)
         db.set_artifact_tier(run_id, result.get("tier"))
-        # Сброс стадии выкатки при переснятии проверки (заваленная проверка не может быть в проде).
         if not result["passed"]:
             db.set_artifact_stage(run_id, "none")
-        # Инциденты: пере-заводим открытые сработки этого артефакта из FAIL-гейтов.
         incident_ids = _sync_incidents(run_id, result.get("gates", []))
         db.log_event(user, _primary_role(user), "artifact_security_check", asset=run_id,
                      result="ok" if result["passed"] else "blocked",
-                     reason="security check (placeholder gate chain)",
+                     reason=(f"security check rerun from {from_gate}" if from_gate
+                             else "security check (gate chain)"),
                      details={"check_status": status, "passed": result["passed"],
-                              "tier": result.get("tier"), "incidents": incident_ids})
+                              "tier": result.get("tier"), "incidents": incident_ids,
+                              "from_gate": from_gate})
         return {"run_id": run_id, "check_status": status, "tier": result.get("tier"),
                 "incidents": incident_ids, "result": result}
 

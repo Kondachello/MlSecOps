@@ -490,7 +490,9 @@ def _render_session(a: dict):
     """Карточка одной сессии-рана: метрики + security check / шаринг / открыть в реестре."""
     rid = a["run_id"]
     title = f"{_label(a)} — {_share_badge(a)} · check: {a.get('check_status')}"
-    with st.expander(title):
+    # Не nested-expander (Streamlit запрещает) — bordered-container c заголовком.
+    with st.container(border=True):
+        st.markdown(f"**{title}**", unsafe_allow_html=True)
         st.write(f"**run_id:** `{rid}`  ·  **эксперимент:** {a.get('experiment')}")
         if a.get("metrics"):
             st.caption("метрики: " + ", ".join(f"{k}={v}" for k, v in a["metrics"].items()))
@@ -758,14 +760,35 @@ def _render_artifact_detail(run_id: str):
                 if logs:
                     st.markdown("<div class='errbox'>" + "<br>".join(
                         str(x).replace("<", "&lt;") for x in logs) + "</div>", unsafe_allow_html=True)
-                if can_rerun and st.button(f"🔁 Перезапустить {g['id']}", key=f"rerun_{run_id}_{g['id']}"):
-                    r = api_post(f"/api/v1/artifacts/{run_id}/gates/{g['id']}/rerun", timeout=60)
-                    if r.status_code == 200:
-                        st.success(f"{g['id']}: {r.json()['gate']['status']}")
-                        _invalidate()
-                        _rerun()
-                    else:
-                        st.error(r.json().get("detail", r.text))
+                if can_rerun:
+                    bcols = st.columns(2)
+                    with bcols[0]:
+                        if st.button(f"🔁 Перезапустить {g['id']}",
+                                     key=f"rerun_{run_id}_{g['id']}"):
+                            r = api_post(f"/api/v1/artifacts/{run_id}/gates/{g['id']}/rerun",
+                                         timeout=120)
+                            if r.status_code == 200:
+                                st.success(f"{g['id']}: {r.json()['gate']['status']}")
+                                _invalidate()
+                                _rerun()
+                            else:
+                                st.error(r.json().get("detail", r.text))
+                    with bcols[1]:
+                        if is_owner and st.button(f"⏭ Перезапустить с {g['id']} до конца",
+                                                   key=f"rerunfrom_{run_id}_{g['id']}"):
+                            r = api_post(
+                                f"/api/v1/artifacts/{run_id}/check",
+                                params={"from_gate": g["id"]}, timeout=300)
+                            if r.status_code == 200:
+                                res = r.json()
+                                (st.success if res["check_status"] == "passed"
+                                 else st.error)(
+                                    f"Цепочка с {g['id']}: {res['check_status']} "
+                                    f"(Tier {res.get('tier')})")
+                                _invalidate()
+                                _rerun()
+                            else:
+                                st.error(r.json().get("detail", r.text))
 
     if is_owner:
         if st.button("🛡 Перепройти security check (вся цепочка)", key=f"recheck_{run_id}"):
