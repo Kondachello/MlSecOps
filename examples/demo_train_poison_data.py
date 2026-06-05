@@ -18,11 +18,11 @@ os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "2")
 
 import requests
 
-DEV_USER = os.getenv("DEV_USER", "junior")
+DEV_USER = os.getenv("DEV_USER", "kolya1")
 DEV_PASSWORD = os.getenv("DEV_PASSWORD", "123")
 BACKEND = os.getenv("GATEKEEPER_URL", "http://localhost:8200")
-EXPERIMENT = f"FF1FFFF{DEV_USER}_demo_bad_data"
-MODEL_NAME = "FFFFF1Ffdemo_pii_model"
+EXPERIMENT = f"NOT_BAD_DATA_{DEV_USER}"
+MODEL_NAME = "NOT_BAD_DATA_PII"
 
 
 def login() -> str:
@@ -45,13 +45,13 @@ def main() -> None:
 
     df = load_breast_cancer(as_frame=True).frame
     # Подмешиваем PII: в первые 5 строк колонки "customer_card" пишем номера карт.
-    df.insert(0, "customer_card", "")
-    df.loc[:4, "customer_card"] = [
-        "4111 1111 1111 1111",   # VISA test
-        "5500 0000 0000 0004",   # MC test
-        "3400-0000-0000-009",
-        "4012888888881881",
-        "6011000990139424",
+    df.insert(0, "ok", "")
+    df.loc[:4, "ok"] = [
+        "hahahahahah",   # VISA test
+        "hahahahahah",   # MC test
+        "hahahahahah",
+        "hahahahahah",
+        "hahahahahah",
     ]
     print(f"[!] Заведомо плохой датасет: PII в колонке 'customer_card' (5 номеров карт)")
 
@@ -65,7 +65,7 @@ def main() -> None:
         })
         # Считаем «модель» (бесполезно, нужно только чтобы был ран).
         clf = LogisticRegression(max_iter=200)
-        clf.fit(df.drop(columns=["target", "customer_card"]).values, df["target"].values)
+        clf.fit(df.drop(columns=["target", "ok"]).values, df["target"].values)
         mlflow.log_metric("accuracy", 0.9)  # не важно — гейт упадёт раньше
 
         with tempfile.TemporaryDirectory() as tmp:
