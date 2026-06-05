@@ -10,7 +10,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-mlsec_app}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
     volumes:
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # 00_ создаёт ОТДЕЛЬНУЮ БД `mlflow` (backend store MLflow) ДО наших таблиц; init.sql —
+      # наша схема в БД mlsec. Обе БД — на нашем управляемом Postgres (контроль + безопасность).
+      - ./init_mlflow_db.sql:/docker-entrypoint-initdb.d/00_mlflow_db.sql:ro
+      - ./init.sql:/docker-entrypoint-initdb.d/10_init.sql:ro
       - pgdata:/var/lib/postgresql/data
     ports: ["5432:5432"]
 
@@ -32,6 +35,14 @@ services:
     build: { context: .., dockerfile: infra/Dockerfile.mlflow }
     # MLflow слушает ВНУТРИ сети; наружу публикуется только через authproxy.
     expose: ["5000"]
+    # BACKEND STORE = НАШ Postgres (контроль + безопасность): метаданные MLflow (эксперименты,
+    # раны, реестр, версии) лежат в нашей управляемой БД, а не в дефолтном ./mlruns. Артефакты
+    # (большие бинари) — в нашем MinIO-бакете. Наружу MLflow не торчит (только через authproxy).
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri ${MLFLOW_BACKEND_STORE_URI:-postgresql+psycopg2://mlsec_app:change_me@postgres:5432/mlflow}
+      --artifacts-destination s3://${MINIO_BUCKET_MLFLOW:-mlflow}/
+    env_file: [../.env]
     environment:
       MLFLOW_S3_ENDPOINT_URL: ${MINIO_ENDPOINT:-http://minio:9000}
       AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-change_me}

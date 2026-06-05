@@ -1,24 +1,23 @@
-"""dev_train_mock.py — простой «ноутбук разработчика»: версионирование модели через MLflow.
+"""dev_train_mock.py — простой «ноутбук разработчика»: ВЕРСИОНИРОВАНИЕ модели через MLflow.
 
-Что делает (имитация работы DS в Jupyter):
-  1) логинится в НАШ сервис (получает JWT);
-  2) настраивает MLflow на наш auth-прокси (`/mlflow`) — это КЛЮЧЕВОЙ момент: личность,
-     владельца и теги проставляет СЕРВЕР, поэтому артефакт корректно попадает в наш сервис
-     и виден под твоим аккаунтом (а не под именем ОС);
-  3) обучает одну модель НЕСКОЛЬКО раз (v1, v2, v3 с разным C) и регистрирует версии в
-     MLflow Model Registry — видно, как идёт ВЕРСИОНИРОВАНИЕ модели;
-  4) каждый прогон (run) = «сессия» — появляется в нашем UI («Реестр» / «Мои артефакты»).
+Главный юзкейс платформы наглядно и просто:
+  1) DS логинится в НАШ сервис и получает токен;
+  2) направляет MLflow на наш auth-прокси (`/mlflow`) — личность/владельца/теги проставляет
+     СЕРВЕР, поэтому артефакт корректно попадает в наш сервис и виден под твоим аккаунтом;
+  3) обучает ОДНУ модель `demo_model` НЕСКОЛЬКО раз (v1, v2, v3 с разным C) и каждый раз
+     регистрирует НОВУЮ ВЕРСИЮ в MLflow Model Registry — видно, как идёт версионирование;
+  4) версия ДАННЫХ — это digest датасета (`mlflow.log_input`): данные тоже версионируются.
 
-Версионирование ДАННЫХ — через `mlflow.log_input` (Data Digest = SHA содержимого датасета).
+Каждый прогон (run) = «сессия разработки» → появляется в UI («Мои артефакты» / «Реестр»).
 
-ВАЖНО: логируем ТОЛЬКО через прокси (через :8200/mlflow), НЕ напрямую в MLflow :5000 —
-иначе артефакт не получит владельца и «потеряется» в реестре.
+ВАЖНО: логируем ТОЛЬКО через прокси (`{BACKEND}/mlflow`), НЕ напрямую в MLflow :5000 — иначе
+артефакт не получит владельца и «потеряется» в реестре.
 
 ЗАПУСК:
-  1) подними стенд:  .\\infra\\start.cmd   (UI :8501, backend :8200, MLflow :5000)
+  1) подними стенд:  infra\\start.cmd     (UI :8501, backend :8200, MLflow :5000)
   2) в UI залогинься msecops/admin-pass; при необходимости заведи DEV_USER и выдай ему роль DS;
   3) python examples/dev_train_mock.py
-  4) смотри: UI «Реестр»/«Мои артефакты» (раны) и версии модели — в MLflow UI / GET /api/v1/models.
+  4) смотри версионирование: UI «Реестр», MLflow UI (:5000) и GET /api/v1/models.
 """
 from __future__ import annotations
 
@@ -31,15 +30,16 @@ os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "2")
 import requests
 
 # ─────────────────────────── НАСТРОЙКИ ───────────────────────────
-DEV_USER = "msecops"            # этот юзер должен существовать и иметь роль (DS/MLSecOps)
+DEV_USER = "msecops"            # должен существовать и иметь роль DS/DE/MLSecOps
 DEV_PASSWORD = "admin-pass"
 BACKEND = os.getenv("GATEKEEPER_URL", "http://localhost:8200")
 EXPERIMENT = f"{DEV_USER}_demo"     # эксперимент = «проект» разработчика
-MODEL_NAME = "demo_model"           # имя в MLflow Model Registry; версии копятся под ним
-PARAMS_C = [0.01, 0.1, 1.0]         # три прогона → три версии модели
+MODEL_NAME = "demo_model"           # имя в Model Registry; под ним копятся ВЕРСИИ
+PARAMS_C = [0.01, 0.1, 1.0]         # три прогона → три версии модели (v1, v2, v3)
 
 
 def login() -> str:
+    """Логин в наш сервис → JWT (он же — пропуск в MLflow через прокси)."""
     try:
         r = requests.post(f"{BACKEND}/api/v1/auth/login",
                           json={"username": DEV_USER, "password": DEV_PASSWORD}, timeout=10)
@@ -47,9 +47,17 @@ def login() -> str:
         raise SystemExit(f"[ОШИБКА] Бэкенд недоступен на {BACKEND}: {e}")
     if r.status_code != 200:
         raise SystemExit(f"[ОШИБКА] Логин {DEV_USER}: {r.status_code} {r.text}\n"
-                         f"  Проверь: пользователь заведён и ему выдана роль.")
+                         f"  Проверь: пользователь заведён и ему выдана роль (DS/DE/MLSecOps).")
     print(f"[ok] вошёл как {DEV_USER}")
     return r.json()["access_token"]
+
+
+def _log_model(mlflow_sklearn, clf):
+    """log_model совместимо с MLflow 2.x (artifact_path) и 3.x (name); регистрирует версию."""
+    try:                                   # MLflow 3.x
+        return mlflow_sklearn.log_model(clf, name="model", registered_model_name=MODEL_NAME)
+    except TypeError:                      # MLflow 2.x
+        return mlflow_sklearn.log_model(clf, artifact_path="model", registered_model_name=MODEL_NAME)
 
 
 def main() -> None:
@@ -74,15 +82,16 @@ def main() -> None:
     dataset = mlflow.data.from_pandas(df, name="breast_cancer", targets="target")  # версия данных = digest
 
     mlflow.set_experiment(EXPERIMENT)
-    print(f"[..] эксперимент '{EXPERIMENT}', обучаю {len(PARAMS_C)} версии модели '{MODEL_NAME}'\n")
+    print(f"[..] эксперимент '{EXPERIMENT}': обучаю модель '{MODEL_NAME}' {len(PARAMS_C)} раза "
+          f"(=> {len(PARAMS_C)} версии)\n")
     for ver, C in enumerate(PARAMS_C, start=1):
         with mlflow.start_run(run_name=f"{MODEL_NAME}_v{ver}") as run:
-            mlflow.log_input(dataset, context="training")          # lineage данных (версия = digest)
+            mlflow.log_input(dataset, context="training")      # lineage данных (версия = digest)
             mlflow.set_tags({
                 "mlflow.user": DEV_USER,
                 "security.data_source_type": "local",
                 "model.name": MODEL_NAME,
-                "model.purpose": "демо-классификатор (breast cancer)",
+                "model.description": "демо-классификатор (breast cancer)",  # тег паспорта модели
                 "model.version_hint": f"v{ver}",
             })
             mlflow.log_param("C", C)
@@ -93,24 +102,27 @@ def main() -> None:
             auc = roc_auc_score(yte, proba)
             mlflow.log_metric("accuracy", acc)
             mlflow.log_metric("roc_auc", auc)
-            # Регистрируем версию в MLflow Model Registry (через прокси) → версионирование.
-            mlflow.sklearn.log_model(clf, artifact_path="model", registered_model_name=MODEL_NAME)
-            print(f"  v{ver}: C={C:<5} accuracy={acc:.3f} roc_auc={auc:.3f}  run={run.info.run_id[:8]}")
+            mv = _log_model(mlflow.sklearn, clf)               # регистрируем НОВУЮ версию
+            reg_ver = getattr(mv, "registered_model_version", None) or "?"
+            print(f"  обучил v{ver}: C={C:<5} accuracy={acc:.3f} roc_auc={auc:.3f}  "
+                  f"-> Model Registry '{MODEL_NAME}' версия {reg_ver}  (run {run.info.run_id[:8]})")
 
-    # Показать версии модели из реестра MLflow (видно версионирование).
+    # Показать все версии модели из реестра MLflow (видно версионирование).
     try:
         models = requests.get(f"{BACKEND}/api/v1/models",
-                              headers={"Authorization": f"Bearer {token}"}, timeout=15).json().get("models", [])
-        print("\n[ok] модели в MLflow Registry:")
+                              headers={"Authorization": f"Bearer {token}"}, timeout=15
+                              ).json().get("models", [])
+        print("\n[ok] версионирование модели в MLflow Registry:")
         for m in models:
-            print(f"   {m['name']} — версии: {m.get('latest_versions')}")
+            if m["name"] == MODEL_NAME:
+                print(f"   {m['name']}: версии {m.get('latest_versions')} (всего {m.get('n_versions')})")
     except requests.exceptions.RequestException:
         pass
 
-    print("\nГотово. В UI (http://localhost:8501):")
-    print("  • «Реестр» / «Мои артефакты» — три рана-сессии (зона «черновики», пока без проверки);")
-    print("  • запусти по ним security check → попадут в зону «прошли проверку»;")
-    print("  • версии модели смотри в MLflow UI (http://localhost:5000) и в GET /api/v1/models.")
+    print("\nГотово. Что посмотреть в UI (http://localhost:8501):")
+    print("  • «Мои артефакты» → эксперимент '" + EXPERIMENT + "' → три сессии-версии;")
+    print("  • запусти по сессии security check → она перейдёт в «прошли проверку» → можно расшарить;")
+    print("  • «Реестр» — те же артефакты по зонам; версии модели — в MLflow UI (:5000).")
 
 
 if __name__ == "__main__":

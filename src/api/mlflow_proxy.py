@@ -159,7 +159,10 @@ async def mlflow_proxy(path: str, request: Request):
 
     url = f"{MLFLOW_UPSTREAM_URL}/{path}"
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        # trust_env=False: внутренний MLflow доверенный и обычно локальный — НЕ пускаем этот
+        # запрос через системный/корпоративный прокси (HTTP_PROXY/ALL_PROXY). Иначе на части
+        # машин (особенно Windows) проксирование ломает связь с MLflow → артефакты «теряются».
+        async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
             upstream = await client.request(
                 request.method, url, content=body,
                 params=request.query_params, headers=fwd_headers,

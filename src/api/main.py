@@ -297,6 +297,17 @@ if app:
         from core import mlflow_utils
         return {"models": mlflow_utils.list_models()}
 
+    @app.get("/api/v1/mlflow/health")
+    def mlflow_health(request: Request):
+        """Доступность MLflow для UI: {ok, upstream, error, experiments, runs}.
+
+        Реестр/«Мои артефакты» вызывают это при пустом списке, чтобы показать ПРИЧИНУ
+        (MLflow недоступен/адрес/ошибка), а не молчаливое «пусто».
+        """
+        _current_user(request)
+        from core import mlflow_utils
+        return mlflow_utils.mlflow_status()
+
     @app.get("/api/v1/mlflow/runs")
     def mlflow_runs(request: Request, limit: int = 50):
         """Последние MLflow-раны по всем экспериментам (нужна аутентификация)."""
@@ -349,6 +360,40 @@ if app:
                 shared.append(enriched)
         return {"mine": mine, "shared_with_me": shared,
                 "my_clearance": identity.clearance(roles)}
+
+    @app.post("/api/v1/artifacts/manual")
+    def artifact_manual_upload(request: Request, name: str = "", description: str = "",
+                               file: Optional[UploadFile] = None):
+        """Подгрузить артефакт ВРУЧНУЮ и по отдельности (без связи с экспериментом-исследованием).
+
+        Доступно DS/DE/MLSecOps. Создаёт ран в личном «ручном» эксперименте владельца, штампует
+        владельца серверно, регистрирует владение в ACL. Артефакт появляется в «Моих артефактах»
+        и реестре как обычная сессия (можно прогнать security check, расшарить, выкатить).
+        """
+        user = _current_user(request)
+        roles = identity.get_roles(user)
+        if not ({"DS", "DE", "MLSecOps"} & set(roles)):
+            db.log_event(user, _primary_role(user), "access_denied", result="blocked",
+                         reason="manual upload requires DS/DE/MLSecOps")
+            raise HTTPException(403, "ручная загрузка артефактов доступна ролям DS/DE/MLSecOps")
+        run_name = (name or (file.filename if file else None) or "manual_artifact").strip()
+        from core import mlflow_utils
+        saved = None
+        if file is not None:
+            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            saved = str(UPLOAD_DIR / Path(file.filename or run_name).name)
+            Path(saved).write_bytes(file.file.read())
+        try:
+            res = mlflow_utils.create_manual_run(user, run_name, file_path=saved,
+                                                 description=description)
+        except RuntimeError as e:
+            raise HTTPException(502, f"MLflow недоступен — ручная загрузка не выполнена: {e}")
+        db.set_experiment_owner(res["experiment_id"], user)
+        db.upsert_artifact(res["run_id"], res["experiment_id"], user, session_name=run_name)
+        db.log_event(user, _primary_role(user), "artifact_manual_upload", asset=res["run_id"],
+                     result="ok", reason=description or "ручная загрузка артефакта",
+                     details={"experiment": res["experiment"], "file": bool(saved)})
+        return {"status": "ok", **res, "run_name": run_name}
 
     @app.post("/api/v1/artifacts/{run_id}/check")
     def artifact_check(run_id: str, request: Request):
@@ -539,6 +584,31 @@ if app:
                          reason=f"вытеснен новым прод-артефактом {run_id}")
         db.log_event(admin, "MLSecOps", "promoted_to_prod", asset=run_id, result="ok",
                      reason=req.reason or "промоушен в прод (placeholder)",
+                     details={"superseded": demoted})
+        return {"run_id": run_id, "stage": "prod", "superseded": demoted}
+
+    @app.post("/api/v1/artifacts/{run_id}/restore")
+    def artifact_restore(run_id: str, req: ReasonRequest, request: Request):
+        """Вернуть в ПРОД ранее откаченный/предыдущий артефакт (RBAC: MLSecOps).
+
+        Используется на странице ПРОД для «замены» текущей прод-модели на другую (blue-green,
+        фиктивный CI). Требует passed security check. Прежняя прод-модель эксперимента → previous.
+        """
+        admin = _require(request, "MLSecOps")
+        acl, _ = _ensure_artifact(run_id)
+        if acl is None:
+            raise HTTPException(404, "run not found in MLflow")
+        if acl.get("check_status") != "passed":
+            raise HTTPException(409, "артефакт не прошёл security check")
+        if (acl.get("stage") or "none") not in ("previous", "approved", "retired"):
+            raise HTTPException(409, "восстановить можно предыдущий/одобренный/выведенный артефакт")
+        demoted = db.demote_prod_artifacts(acl.get("experiment_id", ""), run_id)
+        db.set_artifact_stage(run_id, "prod", deployed_by=admin)
+        for d in demoted:
+            db.log_event(admin, "MLSecOps", "prod_superseded", asset=d, result="ok",
+                         reason=f"вытеснен восстановленным прод-артефактом {run_id}")
+        db.log_event(admin, "MLSecOps", "prod_restored", asset=run_id, result="ok",
+                     reason=req.reason or "восстановление в прод (placeholder CI)",
                      details={"superseded": demoted})
         return {"run_id": run_id, "stage": "prod", "superseded": demoted}
 
@@ -807,11 +877,23 @@ if app:
         if new_rows:
             acls = db.list_artifact_acls([r["run_id"] for r in runs])
         artifacts = []
+        seen = set()
         for r in runs:
             acl = acls.get(r["run_id"])
             if acl is None or not _registry_visible(acl, user, roles):
                 continue
+            seen.add(r["run_id"])
             artifacts.append(_enrich_artifact(r, acl))
+        # DB-only артефакты (нет живого MLflow-рана): ручные сиды/демо-инциденты, артефакты из
+        # стора, который недоступен сейчас. Чтобы они тоже отображались в реестре (зона «не прошли»
+        # и т.п.), строим карточку из ACL. Метрики/имя берём из ACL (session_name).
+        for rid, acl in db.list_artifact_acls().items():
+            if rid in seen or not _registry_visible(acl, user, roles):
+                continue
+            stub = {"run_id": rid, "experiment": acl.get("experiment_id"),
+                    "experiment_id": acl.get("experiment_id"), "run_name": acl.get("session_name"),
+                    "owner": acl.get("owner"), "metrics": {}, "params": {}, "tags": {}}
+            artifacts.append(_enrich_artifact(stub, acl))
         zones = {}
         for a in artifacts:
             zones.setdefault(a["zone"], 0)
@@ -822,16 +904,68 @@ if app:
                                  "в compose — бакет 'mlflow' в MinIO). Прод/одобренные в перспективе — "
                                  "WORM-копия в S3/MinIO под контролем MLflow + нашего сервиса.")}
 
+    @app.get("/api/v1/monitoring/models")
+    def monitoring_models(request: Request):
+        """Карточки моделей для мониторинга рантайма: метрики обучения + теги паспорта модели
+        + ПЛЕЙСХОЛДЕР инференс-метрик (latency/throughput/error-rate). RBAC: любой аутентифицированный.
+
+        Показывает артефакты в зонах prod / выкатка / прошли проверку (то, что эксплуатируется или
+        готово к этому). Инференс-метрики — детерминированный плейсхолдер (рантайм-слой C ещё не
+        прокинут в бэкенд A); теги паспорта (model.name/model.description) берём из тегов рана,
+        иначе плейсхолдер. Видимость — как в реестре.
+        """
+        user = _current_user(request)
+        roles = sorted(identity.get_roles(user))
+        from core import mlflow_utils
+        import hashlib
+        runs = mlflow_utils.list_recent_runs(200)
+        acls = db.list_artifact_acls([r["run_id"] for r in runs])
+        out = []
+        for r in runs:
+            acl = acls.get(r["run_id"])
+            if acl is None or not _registry_visible(acl, user, roles):
+                continue
+            card = _enrich_artifact(r, acl)
+            if card["zone"] not in ("prod", "deploying", "ok"):
+                continue
+            tags = card.get("tags") or {}
+            # Детерминированный плейсхолдер инференс-метрик (стабилен для одного run_id).
+            seed = int(hashlib.sha256(card["run_id"].encode()).hexdigest(), 16)
+            card["model_name"] = tags.get("model.name") or card.get("run_name") or card["run_id"][:8]
+            card["model_description"] = (tags.get("model.description")
+                                         or tags.get("model.purpose")
+                                         or "— (паспорт модели не заполнен, плейсхолдер)")
+            card["inference_metrics"] = {
+                "p95_latency_ms": 40 + seed % 80,
+                "throughput_rps": 50 + seed % 200,
+                "error_rate_pct": round((seed % 50) / 10.0, 1),
+                "requests_24h": 1000 + seed % 9000,
+                "placeholder": True,
+            }
+            out.append(card)
+        # prod выше, затем выкатка, затем ok
+        order = {"prod": 0, "deploying": 1, "ok": 2}
+        out.sort(key=lambda c: order.get(c["zone"], 9))
+        return {"models": out, "inference_metrics_placeholder": True}
+
     @app.get("/api/v1/approvals/pending")
     def pending_approvals(request: Request):
-        """Артефакты, ожидающие HITL Approve (stage=pending_approve). RBAC: MLSecOps."""
+        """Артефакты, ожидающие HITL Approve (stage=pending_approve). RBAC: MLSecOps.
+
+        DB-driven и устойчиво: берём только pending-раны из ACL (их единицы) и обогащаем
+        метаданными MLflow best-effort per-run. НЕ сканируем все 200 ранов MLflow — иначе при
+        медленном/недоступном MLflow ручка таймаутила и очередь HITL «моргала» ошибкой.
+        """
         _require(request, "MLSecOps")
         from core import mlflow_utils
-        runs = {r["run_id"]: r for r in mlflow_utils.list_recent_runs(200)}
         out = []
         for rid, acl in db.list_artifact_acls().items():
-            if (acl.get("stage") or "none") == "pending_approve":
-                out.append(_enrich_artifact(runs.get(rid, {"run_id": rid}), acl))
+            if (acl.get("stage") or "none") != "pending_approve":
+                continue
+            meta = mlflow_utils.get_run(rid) or {
+                "run_id": rid, "run_name": acl.get("session_name"),
+                "experiment": acl.get("experiment_id"), "owner": acl.get("owner")}
+            out.append(_enrich_artifact(meta, acl))
         return {"pending": out}
 
     # ======================= админка RBAC (MLSecOps) =======================

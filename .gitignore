@@ -22,4 +22,7 @@ mlruns/
 
 # Локальные дев-БД и MLflow-стор (не коммитим)
 *.db
+*.db-wal
+*.db-shm
+mlsec_mlflow.db
 mlartifacts/

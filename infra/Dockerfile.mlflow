@@ -4,6 +4,9 @@ FROM python:3.11-slim
 WORKDIR /app
 RUN pip install --no-cache-dir mlflow psycopg2-binary boto3
 EXPOSE 5000
-# Backend-store и artifact-root задаются через окружение/аргументы при запуске.
-# TODO: подставить --backend-store-uri postgresql://... и --default-artifact-root s3://mlflow
-CMD ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000"]
+# Backend-store (= НАШ Postgres) и artifact-destination (= наш MinIO) задаёт docker-compose
+# через `command:` (см. infra/docker-compose.yml, переменная MLFLOW_BACKEND_STORE_URI).
+# Фолбэк-CMD на случай запуска образа без compose-команды:
+CMD ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000", \
+     "--backend-store-uri", "postgresql+psycopg2://mlsec_app:change_me@postgres:5432/mlsec", \
+     "--artifacts-destination", "s3://mlflow/"]

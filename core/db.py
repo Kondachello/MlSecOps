@@ -49,8 +49,14 @@ def get_conn():
             password=os.getenv("POSTGRES_PASSWORD", ""),
         )
     import sqlite3
-    conn = sqlite3.connect(SQLITE_PATH)
+    # timeout/busy_timeout: устойчивость к конкуренции (Streamlit + backend + сиды пишут параллельно).
+    # WAL НЕ включаем глобально — на части ФС (сетевые/смонтированные) WAL даёт "disk I/O error".
+    conn = sqlite3.connect(SQLITE_PATH, timeout=10)
     conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        conn.execute("PRAGMA busy_timeout = 10000")
+    except Exception:  # noqa: BLE001
+        pass
     return conn
 
 

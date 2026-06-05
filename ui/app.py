@@ -296,6 +296,23 @@ def _label(a: dict) -> str:
     return a.get("run_name") or a.get("session_name") or (a.get("run_id", "")[:8])
 
 
+def _mlflow_notice(empty_hint: str):
+    """Показать ПРИЧИНУ пустого списка артефактов: жив ли MLflow (а не молчаливое «пусто»).
+
+    Частая причина пустого реестра — бэкенд не достучался до MLflow (выключен / не тот адрес /
+    системный прокси перехватывает локальный запрос). Этот блок делает сбой видимым."""
+    h = get_json_fresh("/api/v1/mlflow/health", {}) or {}
+    if h and not h.get("ok"):
+        st.error(f"⚠️ MLflow недоступен по адресу `{h.get('upstream')}` — поэтому артефактов не видно.\n\n"
+                 f"Причина: `{h.get('error')}`.")
+        st.caption("Проверь: запущен ли MLflow (порт 5000), верен ли `MLFLOW_UPSTREAM_URL`, "
+                   "не перехватывает ли локальный запрос системный прокси (HTTP_PROXY/ALL_PROXY).")
+    elif h and h.get("ok") and not h.get("runs"):
+        st.info(empty_hint + f"  \n_MLflow на связи ({h.get('upstream')}), но ранов в нём пока нет._")
+    else:
+        st.info(empty_hint)
+
+
 # ──────────────────────────── ЭКРАН ВХОДА ───────────────────────────────────
 def render_login():
     inject_css()
@@ -376,7 +393,14 @@ def page_dashboard():
     # Панель «Ожидают Human Approve» (HITL для Tier=HIGH) — для MLSecOps.
     if _has("MLSecOps"):
         st.markdown("### ⏳ Ожидают Human Approve (HITL, Tier=HIGH)")
-        pend = (get_json("/api/v1/approvals/pending", {}) or {}).get("pending", [])
+        # get_json_fresh + явная обработка недоступности: раньше при медленном MLflow ручка
+        # таймаутила и очередь «моргала» ошибкой. Теперь ручка DB-driven; здесь — мягкий фолбэк.
+        pend_resp = get_json_fresh("/api/v1/approvals/pending", None, timeout=15)
+        if pend_resp is None:
+            st.caption("Очередь временно недоступна (бэкенд не ответил). Нажмите «Обновить».")
+            pend = []
+        else:
+            pend = pend_resp.get("pending", [])
         if not pend:
             st.caption("Очередь подтверждений пуста.")
         for a in pend:
@@ -396,10 +420,37 @@ def page_dashboard():
         else:
             st.info("Статус целостности Audit Trail недоступен.")
 
-    st.markdown("### Мониторинг рантайма (G6 / G7)")
-    _not_implemented("Дрейф (PSI), статистика 429/422, pass-rate гейтов",
-                     note="Метрики считает рантайм-слой C (monitor.py / serve) и пишет в "
-                          "logs/inference_*.jsonl. В бэкенд A они пока не прокинуты.")
+    st.markdown("### 📈 Мониторинг рантайма — модели и их метрики")
+    st.caption("Артефакты в проде / на выкатке / прошедшие проверку. Рядом — метрики (обучения), "
+               "теги паспорта модели и инференс-метрики. Инференс-метрики пока ПЛЕЙСХОЛДЕР "
+               "(рантайм-слой C / monitor.py не прокинут в бэкенд).")
+    mon = (get_json_fresh("/api/v1/monitoring/models", {}) or {}).get("models", [])
+    if not mon:
+        _mlflow_notice("Нет моделей в проде/на проверке. Прогони security check по артефакту "
+                       "(«Мои артефакты») — он появится здесь.")
+    for m in mon:
+        zone = m.get("zone", "ok")
+        inf = m.get("inference_metrics", {})
+        train = m.get("metrics", {}) or {}
+        train_s = ", ".join(f"{k}={v:.3f}" if isinstance(v, float) else f"{k}={v}"
+                            for k, v in train.items()) or "—"
+        badges = f"{_pill(ZONE_LABEL.get(zone, zone), ZONE_KIND.get(zone, 'muted'))} &nbsp; {_tpill(m.get('tier'))}"
+        c1, c2 = st.columns([3, 2])
+        c1.markdown(
+            f"<div class='card {ZONE_KIND.get(zone,'muted')}'><div class='h'>🧠 {m.get('model_name')} &nbsp; {badges}</div>"
+            f"<div class='s'>{m.get('model_description')}</div>"
+            f"<div class='s' style='margin-top:.3rem'>владелец {m.get('owner')} · эксп. {m.get('experiment')} · "
+            f"<span class='mono'>{m.get('run_id','')[:12]}</span></div>"
+            f"<div style='margin-top:.35rem'>📊 метрики обучения: <span class='mono'>{train_s}</span></div></div>",
+            unsafe_allow_html=True)
+        with c2:
+            st.markdown("<div class='card info'><div class='s'>Инференс-метрики "
+                        "<span class='pill pill-muted'>placeholder</span></div>"
+                        f"<div style='margin-top:.25rem'>p95 latency: <b>{inf.get('p95_latency_ms')} ms</b> · "
+                        f"throughput: <b>{inf.get('throughput_rps')} rps</b><br>"
+                        f"error-rate: <b>{inf.get('error_rate_pct')}%</b> · "
+                        f"запросов/24ч: <b>{inf.get('requests_24h')}</b></div></div>",
+                        unsafe_allow_html=True)
 
 
 # ─────────────────────────────── КАБИНЕТ ────────────────────────────────────
@@ -435,64 +486,104 @@ def page_cabinet():
 
 
 # ─────────────────────────────── МОИ АРТЕФАКТЫ ──────────────────────────────
+def _render_session(a: dict):
+    """Карточка одной сессии-рана: метрики + security check / шаринг / открыть в реестре."""
+    rid = a["run_id"]
+    title = f"{_label(a)} — {_share_badge(a)} · check: {a.get('check_status')}"
+    with st.expander(title):
+        st.write(f"**run_id:** `{rid}`  ·  **эксперимент:** {a.get('experiment')}")
+        if a.get("metrics"):
+            st.caption("метрики: " + ", ".join(f"{k}={v}" for k, v in a["metrics"].items()))
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if st.button("🛡 Security check", key=f"chk_{rid}"):
+                r = api_post(f"/api/v1/artifacts/{rid}/check", timeout=60)
+                if r.status_code == 200:
+                    res = r.json()
+                    (st.success if res["check_status"] == "passed" else st.error)(
+                        f"Проверка: {res['check_status']} (Tier {res.get('tier')})")
+                    _invalidate()
+                    _rerun()
+                else:
+                    st.error(r.json().get("detail", r.text))
+            if st.button("📄 Открыть в реестре →", key=f"open_{rid}"):
+                _open_artifact(rid)
+        with c2:
+            custom = st.multiselect("Открыть доступ ролям (опц.)", ALL_ROLES, key=f"roles_{rid}",
+                                    help="Пусто — доступ по клиренсу твоей роли (read-down). "
+                                         "Иначе — только выбранным ролям.")
+            if st.button("🔗 Открыть доступ", key=f"shr_{rid}",
+                         disabled=a.get("check_status") != "passed",
+                         help="Делает артефакт видимым другим ролям. Доступно после security check."):
+                r = api_post(f"/api/v1/artifacts/{rid}/share", json={"roles": custom or None})
+                if r.status_code == 200:
+                    st.success("Доступ открыт.")
+                    _invalidate()
+                    _rerun()
+                else:
+                    st.error(r.json().get("detail", r.text))
+            if a.get("check_status") != "passed":
+                st.caption("Доступ откроется после успешной проверки.")
+        with c3:
+            if a.get("share_status") == "shared" and st.button("🔒 Закрыть доступ", key=f"uns_{rid}"):
+                r = api_post(f"/api/v1/artifacts/{rid}/unshare")
+                if r.status_code == 200:
+                    st.info("Снова приватный.")
+                    _invalidate()
+                    _rerun()
+                else:
+                    st.error(r.json().get("detail", r.text))
+
+
+def _manual_upload_form():
+    """Форма ручной подгрузки отдельного артефакта (без связи с экспериментом)."""
+    with st.expander("➕ Подгрузить артефакт вручную (по отдельности, без эксперимента)"):
+        st.caption("Например, готовая модель/файл из вне MLflow. Создастся сессия в твоём личном "
+                   "«ручном» эксперименте — её можно проверить и расшарить как обычную.")
+        with st.form("manual_upload"):
+            name = st.text_input("Название артефакта", placeholder="external_model_v1")
+            desc = st.text_input("Описание (опционально)")
+            up = st.file_uploader("Файл артефакта (опционально)")
+            if st.form_submit_button("Подгрузить"):
+                files = {"file": (up.name, up.getvalue())} if up else None
+                r = api_post("/api/v1/artifacts/manual", files=files,
+                             params={"name": name, "description": desc}, timeout=60)
+                if r.status_code == 200:
+                    st.success(f"Артефакт подгружен (run {r.json()['run_id'][:8]}).")
+                    _invalidate()
+                    _rerun()
+                else:
+                    st.error(r.json().get("detail", r.text))
+
+
 def page_artifacts():
-    st.subheader("Мои артефакты (сессии разработки MLflow)")
-    st.caption("Каждый ран = сессия (data+код+модель). По умолчанию приватен. Чтобы открыть доступ "
-               "другим ролям — сначала пройди security check, затем выбери видимость.")
+    st.subheader("Мои артефакты (по экспериментам)")
+    st.caption("Артефакты связаны экспериментом-сессией. Открой эксперимент — увидишь его раны "
+               "(data+код+модель). По умолчанию приватны: чтобы открыть доступ — security check, затем шаринг.")
+    _manual_upload_form()
     data = get_json_fresh("/api/v1/artifacts", {}, timeout=30) or {}
     mine = data.get("mine", [])
     shared = data.get("shared_with_me", [])
     st.caption(f"Твой клиренс: {data.get('my_clearance')}")
 
     if not mine:
-        st.info("Своих ранов пока нет. Залогируй сессию через ноутбук/мок "
-                "(examples/dev_train_mock.py) — они появятся здесь.")
-    for a in mine:
-        rid = a["run_id"]
-        title = f"{_label(a)} — {_share_badge(a)} · check: {a.get('check_status')}"
-        with st.expander(title):
-            st.write(f"**run_id:** `{rid}`  ·  **эксперимент:** {a.get('experiment')}")
-            if a.get("metrics"):
-                st.caption("метрики: " + ", ".join(f"{k}={v}" for k, v in a["metrics"].items()))
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                if st.button("🛡 Security check", key=f"chk_{rid}"):
-                    r = api_post(f"/api/v1/artifacts/{rid}/check", timeout=60)
-                    if r.status_code == 200:
-                        res = r.json()
-                        (st.success if res["check_status"] == "passed" else st.error)(
-                            f"Проверка: {res['check_status']} (Tier {res.get('tier')})")
-                        _invalidate()
-                        _rerun()
-                    else:
-                        st.error(r.json().get("detail", r.text))
-                if st.button("📄 Открыть в реестре →", key=f"open_{rid}"):
-                    _open_artifact(rid)
-            with c2:
-                custom = st.multiselect("Открыть доступ ролям (опц.)", ALL_ROLES, key=f"roles_{rid}",
-                                        help="Пусто — доступ по клиренсу твоей роли (read-down). "
-                                             "Иначе — только выбранным ролям.")
-                if st.button("🔗 Открыть доступ", key=f"shr_{rid}",
-                             disabled=a.get("check_status") != "passed",
-                             help="Делает артефакт видимым другим ролям. Доступно после security check."):
-                    r = api_post(f"/api/v1/artifacts/{rid}/share", json={"roles": custom or None})
-                    if r.status_code == 200:
-                        st.success("Доступ открыт.")
-                        _invalidate()
-                        _rerun()
-                    else:
-                        st.error(r.json().get("detail", r.text))
-                if a.get("check_status") != "passed":
-                    st.caption("Доступ откроется после успешной проверки.")
-            with c3:
-                if a.get("share_status") == "shared" and st.button("🔒 Закрыть доступ", key=f"uns_{rid}"):
-                    r = api_post(f"/api/v1/artifacts/{rid}/unshare")
-                    if r.status_code == 200:
-                        st.info("Снова приватный.")
-                        _invalidate()
-                        _rerun()
-                    else:
-                        st.error(r.json().get("detail", r.text))
+        _mlflow_notice("Своих ранов пока нет. Залогируй сессию через ноутбук "
+                       "(examples/dev_train_mock.py) или подгрузи артефакт вручную выше.")
+    else:
+        # Группируем сессии по эксперименту: сначала список экспериментов, внутри — их раны.
+        by_exp: dict = {}
+        for a in mine:
+            key = a.get("experiment") or a.get("experiment_id") or "—"
+            by_exp.setdefault(key, []).append(a)
+        st.markdown(f"#### 🧪 Эксперименты ({len(by_exp)})")
+        for exp_name in sorted(by_exp):
+            sessions = by_exp[exp_name]
+            n_shared = sum(1 for s in sessions if s.get("share_status") == "shared")
+            n_passed = sum(1 for s in sessions if s.get("check_status") == "passed")
+            with st.expander(f"🧪 {exp_name} — сессий: {len(sessions)} · прошли проверку: "
+                             f"{n_passed} · расшарено: {n_shared}", expanded=len(by_exp) == 1):
+                for a in sessions:
+                    _render_session(a)
 
     st.divider()
     st.markdown("#### 📥 Доступно мне (открыли доступ другие)")
@@ -521,8 +612,8 @@ def page_registry():
                "Артефакты физически — в artifact store MLflow; прод-копия в перспективе — WORM в S3/MinIO."))
 
     if not artifacts:
-        st.info("Реестр пуст. Артефакты появляются, когда разработчики логируют раны в MLflow "
-                "и (для общего обзора) запускают по ним security check.")
+        _mlflow_notice("Реестр пуст. Артефакты появляются, когда разработчики логируют раны в MLflow "
+                       "(см. examples/dev_train_mock.py).")
         return
 
     # Фильтры по тегам (security.*) и статусам (а не по поисковой строке).
@@ -740,6 +831,96 @@ def _render_artifact_detail(run_id: str):
     else:
         st.caption(f"Стадия: {stage}. Доступных действий нет.")
         act("retire", "🗄 Вывести из эксплуатации", "Выведено.")
+
+
+# ─────────────────────────────── ПРОД ───────────────────────────────────────
+def _fake_cicd(label: str):
+    """Фиктивная CI/CD-выкатка (анимация шагов) — реального деплоя нет (плейсхолдер)."""
+    import time
+    steps = ["build image", "run security gates", "push to registry",
+             "blue-green switch", "health check", "done"]
+    bar = st.progress(0.0, text=f"CI/CD: {label}…")
+    for i, s in enumerate(steps, 1):
+        time.sleep(0.18)
+        bar.progress(i / len(steps), text=f"CI/CD ({label}): {s}")
+    bar.empty()
+
+
+def page_prod():
+    st.caption("Управление продакшн-моделями: откат, замена (blue-green), восстановление предыдущей. "
+               "CI/CD-выкатка — ФИКТИВНАЯ (плейсхолдер): движение по стадиям персистится и пишется в Audit Trail.")
+    if not _has("MLSecOps"):
+        st.warning("Действия с продом доступны роли MLSecOps. Ниже — текущее состояние прода (только чтение).")
+
+    reg = get_json_fresh("/api/v1/registry", {}) or {}
+    artifacts = reg.get("artifacts", [])
+    if not artifacts:
+        _mlflow_notice("Артефактов нет — прод пуст.")
+        return
+
+    prod = [a for a in artifacts if (a.get("stage") or "none") == "prod"]
+    approved = [a for a in artifacts if (a.get("stage") or "none") == "approved"]
+    previous = [a for a in artifacts if (a.get("stage") or "none") == "previous"]
+
+    can_act = _has("MLSecOps")
+    reason = st.text_input("Причина действия (пишется в Audit Trail)", key="prod_reason") if can_act else ""
+
+    def _act(run_id, path, label, ok_msg):
+        r = api_post(f"/api/v1/artifacts/{run_id}/{path}", json={"reason": reason or label})
+        if r.status_code == 200:
+            _fake_cicd(label)
+            st.success(ok_msg)
+            _invalidate(); _rerun()
+        else:
+            st.error(r.json().get("detail", r.text))
+
+    # ── Текущий прод ─────────────────────────────────────────────────────────
+    st.markdown(f"### 🟢 В проде ({len(prod)})")
+    if not prod:
+        st.caption("Сейчас в проде нет моделей. Переведите одобренную модель ниже или из реестра.")
+    for a in prod:
+        rid = a["run_id"]
+        c1, c2, c3 = st.columns([4, 1, 1])
+        c1.markdown(
+            f"<div class='card ok'><div class='h'>🧠 {_label(a)} &nbsp; {_tpill(a.get('tier'))}</div>"
+            f"<div class='s'>владелец {a.get('owner')} · эксп. {a.get('experiment')} · "
+            f"<span class='mono'>{rid[:12]}</span> · метрики: "
+            f"{', '.join(f'{k}={v}' for k,v in (a.get('metrics') or {}).items()) or '—'}</div></div>",
+            unsafe_allow_html=True)
+        if c2.button("⏮ Откатить", key=f"prod_rb_{rid}", disabled=not can_act, use_container_width=True):
+            _act(rid, "rollback", "rollback", "Откачено из прода (→ previous).")
+        if c3.button("🗄 Вывести", key=f"prod_rt_{rid}", disabled=not can_act, use_container_width=True):
+            _act(rid, "retire", "retire", "Выведено из эксплуатации.")
+
+    # ── Кандидаты на прод (одобренные) ───────────────────────────────────────
+    st.markdown(f"### 🚀 Одобрены, готовы к проду ({len(approved)})")
+    if not approved:
+        st.caption("Нет одобренных кандидатов. Одобрить можно в реестре / на странице артефакта "
+                   "(выкатка → approve для HIGH-Tier).")
+    for a in approved:
+        rid = a["run_id"]
+        c1, c2 = st.columns([5, 1])
+        c1.markdown(
+            f"<div class='card warn'><div class='h'>🧠 {_label(a)} &nbsp; {_tpill(a.get('tier'))}</div>"
+            f"<div class='s'>эксп. {a.get('experiment')} · <span class='mono'>{rid[:12]}</span> · "
+            f"заменит текущую прод-модель этого эксперимента (blue-green)</div></div>",
+            unsafe_allow_html=True)
+        if c2.button("🟢 В прод", key=f"prod_pm_{rid}", disabled=not can_act, use_container_width=True):
+            _act(rid, "promote", "promote", "Переведено в прод (прежняя → previous).")
+
+    # ── Предыдущие (для восстановления) ──────────────────────────────────────
+    st.markdown(f"### ⏮ Предыдущие версии ({len(previous)})")
+    if not previous:
+        st.caption("Откаченных версий нет.")
+    for a in previous:
+        rid = a["run_id"]
+        c1, c2 = st.columns([5, 1])
+        c1.markdown(
+            f"<div class='card muted'><div class='h'>🧠 {_label(a)} &nbsp; {_tpill(a.get('tier'))}</div>"
+            f"<div class='s'>эксп. {a.get('experiment')} · <span class='mono'>{rid[:12]}</span></div></div>",
+            unsafe_allow_html=True)
+        if c2.button("♻️ Вернуть в прод", key=f"prod_rs_{rid}", disabled=not can_act, use_container_width=True):
+            _act(rid, "restore", "restore", "Восстановлено в прод (прежняя → previous).")
 
 
 # ─────────────────────────────── ИСТОРИЯ ────────────────────────────────────
@@ -1003,6 +1184,7 @@ PAGE_DEFS = [
     ("Кабинет", page_cabinet, lambda r: True),
     ("Мои артефакты", page_artifacts, lambda r: _has("DS", "DE", "MLSecOps")),
     ("Реестр", page_registry, lambda r: True),
+    ("Прод", page_prod, lambda r: _has("MLSecOps", "CEO", "Product")),
     ("История", page_events, lambda r: True),
     ("Инциденты", page_incidents, lambda r: True),
     ("Пользователи", page_users, lambda r: _has("MLSecOps")),

@@ -33,12 +33,25 @@ cd /d "%REPO%"
 rem Backend API port (kept OUT of the Hyper-V/winnat reserved ranges; see note above).
 set "API_PORT=8200"
 
-rem MLflow store and artifacts (forward slashes for the file:// URI).
+rem MLflow BACKEND STORE = OUR database, under OUR control (security): MLflow metadata
+rem (experiments, runs, model registry, versions) lives in a DB file INSIDE the repo we manage
+rem (mlsec_mlflow.db), NOT in MLflow's hidden default ./mlruns nor a random user-profile path.
+rem
+rem WHY A SEPARATE FILE (not mlsec_dev.db): MLflow's own schema has tables named `datasets` and
+rem `model_versions` - the SAME names as OUR registry tables. Sharing ONE sqlite would silently
+rem clash and break MLflow's registry/dataset tracking. So: our control, our repo, isolated schema.
+rem Override with MLFLOW_BACKEND_STORE_URI to point at Postgres (parity with compose: db `mlflow`).
+set "OURSTORE=%REPO%\mlsec_mlflow.db"
+set "OURSTORE_FS=%OURSTORE:\=/%"
+if not defined MLFLOW_BACKEND_STORE_URI set "MLFLOW_BACKEND_STORE_URI=sqlite:///%OURSTORE_FS%"
+set "STORE=%MLFLOW_BACKEND_STORE_URI%"
+
+rem Artifacts (the big binary files) stay OUTSIDE the DB, on disk, in a clean path
+rem (forward slashes; no spaces/cyrillic - else MLflow breaks the file:// artifact URI).
 set "MLDATA=%USERPROFILE%\mlsec_mlflow"
 set "ARTDIR=%MLDATA%\artifacts"
 if not exist "%ARTDIR%" mkdir "%ARTDIR%"
 set "MLDATA_FS=%MLDATA:\=/%"
-set "STORE=sqlite:///%MLDATA_FS%/mlflow.db"
 set "ARTURI=file:///%MLDATA_FS%/artifacts"
 
 rem Shared environment (child windows inherit it from this parent).
