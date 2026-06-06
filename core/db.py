@@ -869,6 +869,31 @@ def get_pipeline_run(run_id: int) -> Optional[dict]:
     return _pipeline_row_to_dict(r) if r else None
 
 
+def find_passing_pipeline_run(source: str, *, gate_id: Optional[str] = None) -> Optional[dict]:
+    """Найти последний passed pipeline_run с указанным `source`.
+
+    Используется в lineage-проверке промоушена: «прошли ли данные / код проверку».
+    source = dataset_digest (для data-check) или git_sha (для code-check).
+    Если gate_id задан — проверяет что этот гейт в detail.gates имеет PASS.
+    """
+    with _tx() as cur:
+        cur.execute(
+            _sql(f"SELECT {_PIPELINE_COLS} FROM pipeline_runs "
+                 f"WHERE status = 'passed' AND source = ? ORDER BY id DESC LIMIT 50"),
+            (source,))
+        rows = cur.fetchall()
+    for r in rows:
+        pr = _pipeline_row_to_dict(r)
+        if gate_id is None:
+            return pr
+        # Проверяем что конкретный гейт прошёл (а не просто весь прогон).
+        gates = (pr.get("detail") or {}).get("gates") or []
+        for g in gates:
+            if g.get("id") == gate_id and g.get("status") == "PASS":
+                return pr
+    return None
+
+
 # --- демо/самопроверка -------------------------------------------------------
 if __name__ == "__main__":
     # Короткий сценарий: чистая sqlite-БД → регистрация → роль → доступ →

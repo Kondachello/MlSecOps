@@ -214,6 +214,52 @@ def _enrich_artifact(run: dict, acl: Optional[dict]) -> dict:
     }
 
 
+def _invoke_ci_retrain(source_run_id: str, timeout_sec: int = 900) -> dict:
+    """Запустить ci.retrain в gates-runner (compose) или inline (dev).
+
+    Парсит JSON-блок между маркерами CI_RETRAIN_RESULT_BEGIN/END (контракт ci/retrain.py).
+    """
+    import json as _json
+    import os as _os
+    import subprocess as _sp
+    import sys as _sys
+    from pathlib import Path as _P
+    repo_root = _P(__file__).resolve().parents[2]
+    # Тот же detect-mode что и в core.gates_pipeline.
+    from core import gates_pipeline as _gp
+    mode = _gp._resolve_mode()
+    runner_args = ["--source-run", source_run_id]
+    if mode == "docker":
+        cmd = ["docker", "compose", "-f", _gp.GATES_COMPOSE_FILE, "exec", "-T",
+               _gp.GATES_COMPOSE_SERVICE,
+               "python", "-m", "ci.retrain", *runner_args]
+    else:
+        cmd = [_sys.executable, "-m", "ci.retrain", *runner_args]
+    env = {**_os.environ, "PYTHONPATH": str(repo_root)}
+    try:
+        proc = _sp.run(cmd, cwd=str(repo_root), env=env, capture_output=True, text=True,
+                       timeout=timeout_sec, encoding="utf-8", errors="replace")
+    except _sp.TimeoutExpired:
+        return {"ok": False, "error": f"ci.retrain timeout (>{timeout_sec}s)"}
+    except FileNotFoundError as e:
+        return {"ok": False, "error": f"runner not found: {e}"}
+
+    BEGIN, END = "===CI_RETRAIN_RESULT_BEGIN===", "===CI_RETRAIN_RESULT_END==="
+    out = proc.stdout or ""
+    if BEGIN in out and END in out:
+        chunk = out.split(BEGIN, 1)[1].split(END, 1)[0].strip()
+        try:
+            res = _json.loads(chunk)
+            res["_mode"] = mode
+            res["_rc"] = proc.returncode
+            return res
+        except _json.JSONDecodeError as e:
+            return {"ok": False, "error": f"result json parse failed: {e}",
+                    "_stdout_tail": out[-1500:]}
+    return {"ok": False, "error": f"runner did not emit result block (rc={proc.returncode})",
+            "_stdout_tail": out[-1500:], "_stderr_tail": (proc.stderr or "")[-1500:]}
+
+
 def _sync_incidents(run_id: str, gates: list) -> list[int]:
     """Пересоздать открытые инциденты артефакта из упавших гейтов (после security check).
 
@@ -584,24 +630,199 @@ if app:
                      reason=req.reason or "HITL approve (Tier=HIGH)")
         return {"run_id": run_id, "stage": "approved", "approved_by": admin}
 
+    @app.get("/api/v1/artifacts/{run_id}/lineage")
+    def artifact_lineage(run_id: str, request: Request):
+        """Pre-flight lineage check: «прошли ли данные и код этого ран'а security check».
+
+        Используется UI на странице артефакта перед кнопкой «Выкатка в прод» — чтобы
+        показать пользователю, можно ли в принципе запускать ретрейн (canon: docs/05 №1).
+        """
+        _current_user(request)
+        from core import lineage, mlflow_utils
+        meta = mlflow_utils.get_run_metadata(run_id)
+        if not meta:
+            raise HTTPException(404, "run not found in MLflow")
+        return lineage.verify_lineage(meta)
+
     @app.post("/api/v1/artifacts/{run_id}/promote")
-    def artifact_promote(run_id: str, req: ReasonRequest, request: Request):
-        """Перевести одобренный артефакт в ПРОД (RBAC: MLSecOps). Прежний прод эксп-та → previous."""
+    def artifact_promote(run_id: str, req: ReasonRequest, request: Request,
+                          skip_retrain: bool = False):
+        """Промоутить артефакт в ПРОД (RBAC: MLSecOps).
+
+        КАНОН (docs/05 №1): прод-артефакт ОБЯЗАН быть обучен в CI на проверенных данных
+        и проверенном коде. Поэтому:
+          • Если артефакт уже ci_trained (тег security.origin) — промоушен прямой;
+          • Иначе делаем pre-flight verify_lineage (DATA-гейт пройден на этих данных,
+            G0 пройден на этом git_sha). Если нет → 409 с пояснением (что нужно сделать).
+          • Если lineage ок — запускаем CI-retrain (см. /retrain). Этот эндпоинт ТОЛЬКО
+            промоутит, ретрейн — отдельной кнопкой (`POST /retrain`), чтобы UI мог
+            показать прогресс. Передай `?skip_retrain=true` ТОЛЬКО для уже ci_trained
+            артефактов или для exception-промоушена с обоснованием в reason.
+        """
         admin = _require(request, "MLSecOps")
-        acl, _ = _ensure_artifact(run_id)
+        acl, meta = _ensure_artifact(run_id)
         if acl is None:
             raise HTTPException(404, "run not found in MLflow")
         if acl.get("stage") != "approved":
             raise HTTPException(409, "артефакт не одобрен (stage != approved)")
+
+        tags = (meta or {}).get("tags") or {}
+        is_ci_trained = tags.get("security.origin") == "ci_trained"
+
+        if not is_ci_trained and not skip_retrain:
+            # Жёсткое требование канона: непервичный артефакт в прод не пускаем.
+            from core import lineage
+            lin = lineage.verify_lineage(meta or {})
+            if not lin["ok"]:
+                missing = []
+                if not lin["data_ok"]:
+                    missing.append(f"data: {lin.get('data_missing_reason')}")
+                if not lin["code_ok"]:
+                    missing.append(f"code: {lin.get('code_missing_reason')}")
+                db.log_event(admin, "MLSecOps", "promote_blocked", asset=run_id,
+                             result="blocked",
+                             reason="lineage: данные или код не прошли security-гейты",
+                             details={"lineage": lin})
+                raise HTTPException(409, {
+                    "error": "lineage_not_verified",
+                    "message": "Артефакт нельзя в прод: данные или код не прошли security check.",
+                    "lineage": lin,
+                    "missing": missing,
+                    "next_action": ("Запусти DATA-гейт на источнике данных и/или дождись "
+                                    "прохождения CI workflow на этом git_sha. После — "
+                                    "запусти ретрейн через POST /retrain и промоутни "
+                                    "получившийся ci_trained ран."),
+                })
+            # Lineage прошёл, но артефакт всё ещё локальный (не ci_trained) — блокируем
+            # прямой промоушен. Юзер должен запустить /retrain, получить новый ci_trained
+            # ран, и его уже промоутить (skip_retrain=true применим только к нему).
+            raise HTTPException(409, {
+                "error": "ci_retrain_required",
+                "message": ("Артефакт обучен локально (security.origin != ci_trained). "
+                            "Перед промоушеном запусти CI-retrain (кнопка «Запустить CI-retrain» "
+                            "в UI или POST /api/v1/artifacts/{run_id}/retrain). После успешного "
+                            "ретрейна промоутни новый ран — он будет ci_trained."),
+                "lineage": lin,
+            })
+
+        # Если skip_retrain=true — фиксируем в Audit Trail с обоснованием (exception).
+        if not is_ci_trained and skip_retrain:
+            db.log_event(admin, "MLSecOps", "promote_skip_retrain", asset=run_id,
+                         result="ok",
+                         reason=f"EXCEPTION skip_retrain: {req.reason or '(no reason)'}",
+                         details={"origin": tags.get("security.origin", "(unknown)")})
+
         demoted = db.demote_prod_artifacts(acl.get("experiment_id", ""), run_id)
         db.set_artifact_stage(run_id, "prod", deployed_by=admin)
         for d in demoted:
             db.log_event(admin, "MLSecOps", "prod_superseded", asset=d, result="ok",
                          reason=f"вытеснен новым прод-артефактом {run_id}")
         db.log_event(admin, "MLSecOps", "promoted_to_prod", asset=run_id, result="ok",
-                     reason=req.reason or "промоушен в прод (placeholder)",
-                     details={"superseded": demoted})
-        return {"run_id": run_id, "stage": "prod", "superseded": demoted}
+                     reason=req.reason or "промоушен в прод",
+                     details={"superseded": demoted, "ci_trained": is_ci_trained,
+                              "skip_retrain": skip_retrain})
+        return {"run_id": run_id, "stage": "prod", "superseded": demoted,
+                "ci_trained": is_ci_trained}
+
+    @app.post("/api/v1/artifacts/{run_id}/retrain")
+    def artifact_retrain(run_id: str, req: ReasonRequest, request: Request):
+        """Запустить CI-retrain артефакта-кандидата (RBAC: MLSecOps).
+
+        ПРЕДУСЛОВИЕ (КАНОН docs/05 №1): данные и код этого ран'а ДОЛЖНЫ были пройти
+        security-гейты — проверяется через verify_lineage(). Если не прошли → 409.
+
+        ДЕЙСТВИЕ:
+          1) Открываем pipeline_run (trigger='ci_scheduled', status='running');
+          2) Запускаем ci.retrain в gates-runner — переобучает с нуля под `ci`-юзером,
+             новый ран получает security.origin=ci_trained (штамп прокси);
+          3) Прогоняем security check на новом ран'е;
+          4) Закрываем pipeline_run + возвращаем new_run_id.
+
+        Возвращает {pipeline_run_id, new_run_id, check_status, lineage_ok}.
+        """
+        admin = _require(request, "MLSecOps")
+        acl, meta = _ensure_artifact(run_id)
+        if acl is None:
+            raise HTTPException(404, "run not found in MLflow")
+
+        from core import lineage, gates_pipeline, security_check
+        lin = lineage.verify_lineage(meta or {})
+        if not lin["ok"]:
+            raise HTTPException(409, {
+                "error": "lineage_not_verified",
+                "message": "Нельзя запускать CI-retrain: данные или код не прошли security check.",
+                "lineage": lin,
+            })
+
+        # 1) Открываем CI-pipeline_run (видно в «История CI»).
+        pr_id = db.create_pipeline_run(trigger="ci_scheduled", source=run_id,
+                                       actor=admin, gate_ids=["RETRAIN"])
+        db.log_event(admin, "MLSecOps", "ci_retrain_started", asset=run_id,
+                     result="pending", reason=req.reason or "выкатка в прод требует CI-retrain",
+                     details={"pipeline_run_id": pr_id, "lineage": lin})
+
+        # 2) Триггерим ci.retrain в нужном режиме (docker exec / inline subprocess).
+        import time as _t
+        t0 = _t.monotonic()
+        retrain_result = _invoke_ci_retrain(run_id)
+        retrain_ms = int((_t.monotonic() - t0) * 1000)
+
+        if not retrain_result.get("ok"):
+            db.finish_pipeline_run(pr_id, status="error", duration_ms=retrain_ms,
+                                   detail={"retrain": retrain_result, "lineage": lin})
+            db.log_event(admin, "MLSecOps", "ci_retrain_failed", asset=run_id, result="error",
+                         reason=retrain_result.get("error", "unknown"),
+                         details={"pipeline_run_id": pr_id, "result": retrain_result})
+            raise HTTPException(502, {
+                "error": "ci_retrain_failed",
+                "message": retrain_result.get("error", "ретрейн упал"),
+                "pipeline_run_id": pr_id,
+                "retrain": retrain_result,
+            })
+
+        new_run_id = retrain_result["new_run_id"]
+        # 3) Регистрируем ACL нового рана + прогоняем полную цепочку гейтов.
+        from core import mlflow_utils
+        new_meta = mlflow_utils.get_run_metadata(new_run_id) or {}
+        db.upsert_artifact(new_run_id, new_meta.get("experiment_id", ""),
+                           new_meta.get("owner", "ci"), session_name=new_meta.get("run_name"))
+        check_result = security_check.run_artifact_check(new_run_id, new_meta,
+                                                          actor="ci", trigger="ci_scheduled")
+        check_status = "passed" if check_result["passed"] else "failed"
+        db.set_check_status(new_run_id, check_status, check_result)
+        db.set_artifact_tier(new_run_id, check_result.get("tier"))
+        # Новый ран — кандидат на approve→prod (HIGH-tier → HITL). Не сразу в prod.
+        new_stage = "pending_approve" if check_result.get("tier") == "HIGH" else "approved"
+        db.set_artifact_stage(new_run_id, new_stage if check_result["passed"] else "none",
+                              deployed_by=admin)
+
+        # 4) Закрываем CI-pipeline_run финальным статусом.
+        db.finish_pipeline_run(pr_id,
+                               status="passed" if check_result["passed"] else "failed",
+                               duration_ms=retrain_ms + int(check_result.get("duration_ms", 0)),
+                               detail={"retrain": retrain_result, "lineage": lin,
+                                       "security_check": check_result,
+                                       "new_run_id": new_run_id})
+        db.log_event(admin, "MLSecOps", "ci_retrain_finished", asset=run_id,
+                     result="ok" if check_result["passed"] else "blocked",
+                     reason=(f"CI retrain → new run {new_run_id[:8]} "
+                             f"check={check_status}"),
+                     details={"pipeline_run_id": pr_id, "new_run_id": new_run_id,
+                              "new_stage": new_stage, "tier": check_result.get("tier")})
+
+        return {
+            "pipeline_run_id": pr_id,
+            "source_run_id": run_id,
+            "new_run_id": new_run_id,
+            "check_status": check_status,
+            "new_stage": new_stage if check_result["passed"] else "none",
+            "tier": check_result.get("tier"),
+            "lineage_ok": True,
+            "next_action": ("Открой новый артефакт → проверь паспорт → "
+                            "промоутни в прод (skip_retrain=true можно — он ci_trained)."
+                            if check_result["passed"]
+                            else "Цепочка гейтов упала на новом ране — смотри инциденты."),
+        }
 
     @app.post("/api/v1/artifacts/{run_id}/restore")
     def artifact_restore(run_id: str, req: ReasonRequest, request: Request):

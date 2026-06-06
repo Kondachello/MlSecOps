@@ -77,6 +77,12 @@ def main() -> None:
             "model.description": "демо-классификатор (breast cancer, ONNX)",
             "security.data_source_type": "local",
             "security.dataset_origin": "sklearn.datasets.load_breast_cancer",
+            # Тег нужен для CI-retrain: backend читает его при /promote чтобы знать
+            # какой скрипт переобучить с нуля под сервисным аккаунтом `ci`.
+            "ci.train_script": "examples/demo_train_clean.py",
+            # Если этот ран — результат CI-ретрейна, помечаем источник (необязательно).
+            **({"ci.retrain_of": os.environ["CI_RETRAIN_OF"]}
+               if os.environ.get("CI_RETRAIN_OF") else {}),
         })
 
         clf = make_pipeline(StandardScaler(), LogisticRegression(C=1.0, max_iter=1000))

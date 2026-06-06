@@ -844,7 +844,94 @@ def _render_artifact_detail(run_id: str):
         else:
             act("approve", "✅ Approve (HITL)", "Подтверждено.")
     elif stage == "approved":
-        act("promote", "🟢 Перевести в ПРОД", "Переведено в прод.")
+        # Канон (docs/05 №1): прод-артефакт ОБЯЗАН быть обучен в CI на проверенных
+        # данных и проверенном коде. Поэтому сначала pre-flight lineage check,
+        # потом либо прямой промоушен (если артефакт уже ci_trained), либо ретрейн.
+        lin = get_json_fresh(f"/api/v1/artifacts/{run_id}/lineage", {}) or {}
+        tags = card.get("tags") or {}
+        is_ci_trained = tags.get("security.origin") == "ci_trained"
+
+        # Бейджи lineage (что нужно для прода)
+        st.markdown("##### Pre-flight: проверка происхождения для прода")
+        lc1, lc2, lc3 = st.columns(3)
+        with lc1:
+            badge = "✅ ci_trained" if is_ci_trained else "⚠️ local"
+            st.metric("Origin", badge,
+                      help="security.origin тег рана. Прод обязан быть ci_trained.")
+        with lc2:
+            st.metric("DATA gate (данные)", "✅" if lin.get("data_ok") else "❌",
+                      help=lin.get("data_missing_reason") or "Датасет прошёл DATA-гейт.")
+        with lc3:
+            st.metric("G0 gate (код)", "✅" if lin.get("code_ok") else "❌",
+                      help=lin.get("code_missing_reason") or "Код прошёл G0-гейт.")
+
+        if not lin.get("ok"):
+            st.error("Нельзя в прод: данные или код не прошли security check. "
+                     "См. подсказки на бейджах выше — что нужно сделать.")
+            if lin.get("data_missing_reason"):
+                st.warning(f"**Данные**: {lin['data_missing_reason']}")
+            if lin.get("code_missing_reason"):
+                st.warning(f"**Код**: {lin['code_missing_reason']}")
+        elif is_ci_trained:
+            # Артефакт уже обучен в CI — можно промоутить напрямую.
+            st.success("Артефакт обучен в CI, lineage проверен → можно сразу в прод.")
+            if st.button("🟢 Перевести в ПРОД", key=f"promote_direct_{run_id}"):
+                r = api_post(f"/api/v1/artifacts/{run_id}/promote",
+                             json={"reason": reason}, params={"skip_retrain": "true"})
+                if r.status_code == 200:
+                    st.success("Переведено в прод.")
+                    _invalidate(); _rerun()
+                else:
+                    st.error(r.json().get("detail", r.text))
+        else:
+            # Lineage прошёл, но артефакт локальный → нужен CI-ретрейн перед промоушеном.
+            st.info("Данные/код проверены, НО артефакт обучен локально. По канону прод-артефакт "
+                    "должен быть обучен в CI с нуля. Запусти CI-retrain — он создаст новый "
+                    "ci_trained ран на тех же данных, прогонит security check, и его уже промоутишь.")
+            cretrain1, cretrain2 = st.columns([2, 1])
+            with cretrain1:
+                if st.button("🛠 Запустить CI-retrain (→ прод)", key=f"retrain_{run_id}",
+                             type="primary"):
+                    with st.spinner("Переобучение в CI… (1-3 мин, не закрывай вкладку)"):
+                        r = api_post(f"/api/v1/artifacts/{run_id}/retrain",
+                                     json={"reason": reason}, timeout=900)
+                    if r.status_code == 200:
+                        res = r.json()
+                        new_rid = res["new_run_id"]
+                        ok = res["check_status"] == "passed"
+                        msg = (f"CI-retrain завершён. Новый ран `{new_rid[:8]}…` — "
+                               f"security check **{res['check_status']}** (Tier {res.get('tier')}). "
+                               f"pipeline_run #{res['pipeline_run_id']}.")
+                        (st.success if ok else st.error)(msg)
+                        if ok:
+                            st.info(f"Открой его в реестре и промоутни в прод "
+                                    f"(будет skip_retrain=true т.к. ci_trained). "
+                                    f"Следующая стадия: **{res.get('new_stage')}**.")
+                            if st.button("📄 Открыть новый ран", key=f"open_new_{new_rid}"):
+                                _open_artifact(new_rid)
+                        _invalidate()
+                    else:
+                        try:
+                            err = r.json().get("detail", {})
+                        except Exception:  # noqa: BLE001
+                            err = r.text
+                        st.error(err if isinstance(err, str) else json.dumps(err, ensure_ascii=False, indent=2))
+            with cretrain2:
+                if st.button("⚠️ Промоутить без ретрейна (exception)",
+                             key=f"force_promote_{run_id}",
+                             help="EXCEPTION-промоушен (нарушает канон). Обязательно укажи reason. "
+                                  "Пишется в Audit Trail как promote_skip_retrain."):
+                    if not reason.strip():
+                        st.error("EXCEPTION-промоушен требует обоснование (поле «Причина действия»).")
+                    else:
+                        r = api_post(f"/api/v1/artifacts/{run_id}/promote",
+                                     json={"reason": reason},
+                                     params={"skip_retrain": "true"})
+                        if r.status_code == 200:
+                            st.warning("Промоушен с пропуском CI-retrain. Пишется в Audit Trail.")
+                            _invalidate(); _rerun()
+                        else:
+                            st.error(r.json().get("detail", r.text))
     elif stage == "prod":
         c1, c2 = st.columns(2)
         with c1:
