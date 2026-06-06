@@ -143,6 +143,30 @@ CREATE TABLE IF NOT EXISTS artifact_acl (
     updated_at    TIMESTAMPTZ DEFAULT now()
 );
 
+-- ───────────────────── История CI / pipeline_runs ─────────────────────────
+-- Источник истины для страницы «История CI». Заполняется на каждом запуске
+-- цепочки гейтов (артефакт-чек / git-push / manual).
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    id            BIGSERIAL PRIMARY KEY,
+    ts            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    trigger       TEXT NOT NULL CHECK (trigger IN ('artifact','git_push','manual_ui','ci_scheduled')),
+    source        TEXT,
+    ref           TEXT,
+    actor         TEXT NOT NULL,
+    gate_ids      TEXT,
+    status        TEXT NOT NULL CHECK (status IN ('running','passed','failed','error')),
+    passed_count  INTEGER DEFAULT 0,
+    failed_count  INTEGER DEFAULT 0,
+    skipped_count INTEGER DEFAULT 0,
+    duration_ms   INTEGER DEFAULT 0,
+    detail        JSONB,
+    started_at    TIMESTAMPTZ,
+    finished_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS pipeline_runs_ts_idx       ON pipeline_runs (ts DESC);
+CREATE INDEX IF NOT EXISTS pipeline_runs_trigger_idx  ON pipeline_runs (trigger);
+CREATE INDEX IF NOT EXISTS pipeline_runs_status_idx   ON pipeline_runs (status);
+
 -- ───────── Append-only: отозвать UPDATE/DELETE на events у роли приложения ─────────
 -- Выполнить ПОСЛЕ создания роли mlsec_app (см. .env / docker-compose):
 -- REVOKE UPDATE, DELETE ON events FROM mlsec_app;

@@ -1002,6 +1002,81 @@ def page_events():
             unsafe_allow_html=True)
 
 
+# ─────────────────────────────── ИСТОРИЯ CI ─────────────────────────────────
+def page_ci_history():
+    """Журнал прогонов цепочки гейтов: артефакт-чек / git-push / manual.
+
+    Источник — таблица pipeline_runs (одна запись на каждый прогон цепочки).
+    Параллельный «История событий» — это audit (hash-chain), а это — журнал CI.
+    """
+    st.caption("Каждый запуск цепочки гейтов (security check артефакта, git-push в репо, "
+               "ручной триггер) пишется отдельной записью с длительностью и результатом.")
+    f1, f2, f3 = st.columns([1, 1, 1])
+    trig_filter = f1.selectbox("Триггер",
+                               ["", "artifact", "git_push", "manual_ui", "ci_scheduled"],
+                               key="ci_trig")
+    stat_filter = f2.selectbox("Статус",
+                               ["", "running", "passed", "failed", "error"],
+                               key="ci_stat")
+    if f3.button("🔄 Обновить", use_container_width=True):
+        _invalidate()
+        _rerun()
+    qs = "?limit=200"
+    if trig_filter:
+        qs += f"&trigger={trig_filter}"
+    if stat_filter:
+        qs += f"&status={stat_filter}"
+    data = (get_json_fresh(f"/api/v1/pipeline_runs{qs}", {}) or {}).get("pipeline_runs", [])
+    if not data:
+        st.info("CI-прогонов пока нет. Запусти «Security check» на артефакте, либо триггерни "
+                "workflow `.github/workflows/gates.yml` (push в репо).")
+        return
+
+    # Метрики-плитки
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Всего прогонов", len(data))
+    c2.metric("Прошли", sum(1 for r in data if r["status"] == "passed"))
+    c3.metric("Упали", sum(1 for r in data if r["status"] == "failed"))
+    c4.metric("Ошибок runner", sum(1 for r in data if r["status"] == "error"))
+
+    icon = {"passed": "✅", "failed": "❌", "running": "⏳", "error": "⚠️"}
+    trig_icon = {"artifact": "📦", "git_push": "🌿", "manual_ui": "👆", "ci_scheduled": "⏰"}
+    for r in data:
+        k = "ok" if r["status"] == "passed" else "bad" if r["status"] in ("failed", "error") else "warn"
+        title = (f"#{r['id']} {icon.get(r['status'], '·')} {r['status'].upper()} · "
+                 f"{trig_icon.get(r['trigger'], '·')} {r['trigger']} · "
+                 f"{(r.get('source') or '—')[:32]}")
+        with st.expander(title):
+            cc = st.columns(4)
+            cc[0].metric("Длительность", f"{r['duration_ms']/1000:.1f}с")
+            cc[1].metric("PASS", r["passed_count"])
+            cc[2].metric("FAIL", r["failed_count"])
+            cc[3].metric("SKIP", r["skipped_count"])
+            st.caption(f"актор: **{r['actor']}** · ref: `{r.get('ref') or '—'}` · "
+                       f"гейты: `{', '.join(r.get('gate_ids') or []) or 'все'}` · "
+                       f"запущен {str(r.get('started_at') or r.get('ts'))[:19]}")
+            if st.button("📑 Открыть подробности (гейты + логи)",
+                         key=f"ci_open_{r['id']}"):
+                detail = get_json_fresh(f"/api/v1/pipeline_runs/{r['id']}", {}) or {}
+                inner = detail.get("detail") or {}
+                gates = inner.get("gates") or []
+                if not gates:
+                    st.info("Detail пустой (старый прогон или error до старта гейтов).")
+                else:
+                    for g in gates:
+                        kk = _kind(g.get("status"))
+                        st.markdown(
+                            f"<div class='card {kk}'><b>{g['status']} {g['id']}</b> "
+                            f"<span class='mono'>{g.get('duration_ms', 0)}ms</span> — "
+                            f"{g.get('detail', '')}</div>", unsafe_allow_html=True)
+                        logs = g.get("logs") or []
+                        if logs:
+                            with st.container(border=True):
+                                st.markdown("<div class='errbox'>" + "<br>".join(
+                                    str(x).replace("<", "&lt;") for x in logs) +
+                                    "</div>", unsafe_allow_html=True)
+
+
 # ─────────────────────────────── ИНЦИДЕНТЫ ──────────────────────────────────
 def page_incidents():
     st.caption("Инциденты безопасности — автоматически из упавших гейтов (security check артефактов). "
@@ -1209,6 +1284,7 @@ PAGE_DEFS = [
     ("Реестр", page_registry, lambda r: True),
     ("Прод", page_prod, lambda r: _has("MLSecOps", "CEO", "Product")),
     ("История", page_events, lambda r: True),
+    ("История CI", page_ci_history, lambda r: True),
     ("Инциденты", page_incidents, lambda r: True),
     ("Пользователи", page_users, lambda r: _has("MLSecOps")),
     ("Карта покрытия", page_coverage, lambda r: CTRL is not None),

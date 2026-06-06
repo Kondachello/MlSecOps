@@ -21,9 +21,10 @@
 """
 from __future__ import annotations
 
+import time
 from typing import Optional
 
-from core import gates_pipeline
+from core import db, gates_pipeline
 
 # Ключевые слова критичных доменов → Tier=HIGH (плейсхолдер классификации критичности).
 # В реальной системе Tier берётся из паспорта модели / реестра use-case'ов.
@@ -46,15 +47,30 @@ def compute_tier(run_meta: Optional[dict] = None) -> str:
 
 def run_artifact_check(run_id: str, run_meta: Optional[dict] = None,
                        only: Optional[list[str]] = None,
-                       from_gate: Optional[str] = None) -> dict:
-    """Прогнать цепочку гейтов на артефакте.
+                       from_gate: Optional[str] = None,
+                       *, actor: Optional[str] = None,
+                       trigger: str = "artifact") -> dict:
+    """Прогнать цепочку гейтов на артефакте + записать pipeline_run в БД (история CI).
 
     only=[ids] — подмножество (для rerun одного гейта);
     from_gate=ID — рестарт цепочки с указанного гейта до конца.
+    actor — кто запустил (для журнала); по умолчанию из run_meta.owner.
+    trigger — тип запуска: artifact (по кнопке на ране) / manual_ui / git_push / ci_scheduled.
     """
     meta = dict(run_meta or {})
     meta.setdefault("run_id", run_id)
+    actor = actor or meta.get("owner") or "system"
+    selected_ids = only or ([from_gate] if from_gate else None)
+    # 1) Открываем pipeline_run (status='running'): он попадает в «История CI» сразу.
+    pr_id: Optional[int] = None
+    try:
+        pr_id = db.create_pipeline_run(trigger=trigger, source=run_id, actor=actor,
+                                       gate_ids=selected_ids)
+    except Exception as e:  # noqa: BLE001 — не валим прогон гейтов если БД недоступна
+        print(f"[security_check] WARN create_pipeline_run skipped: {e}")
+    t0 = time.monotonic()
     pipe = gates_pipeline.run_pipeline(meta, only=only, from_gate=from_gate)
+    duration_ms = int((time.monotonic() - t0) * 1000)
     result = {
         "passed": pipe.get("passed", False),
         "run_id": run_id,
@@ -77,6 +93,15 @@ def run_artifact_check(run_id: str, run_meta: Optional[dict] = None,
           f"({len(result['gates'])} gates, mode={result['debug'].get('runner_mode', '?')})")
     for g in result["gates"]:
         print(f"[security_check]   {g['status']:4} {g['id']} {g.get('name','')}: {g.get('detail','')}")
+
+    # 2) Закрываем pipeline_run финальным статусом + полным detail (с гейтами/логами).
+    if pr_id is not None:
+        try:
+            db.finish_pipeline_run(pr_id,
+                                   status=("passed" if result["passed"] else "failed"),
+                                   detail=result, duration_ms=duration_ms)
+        except Exception as e:  # noqa: BLE001
+            print(f"[security_check] WARN finish_pipeline_run skipped: {e}")
 
     return result
 

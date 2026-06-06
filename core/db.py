@@ -202,6 +202,26 @@ CREATE TABLE IF NOT EXISTS experiment_owner (
     owner         TEXT NOT NULL,          -- первый писатель = владелец (серверный штамп прокси)
     created_at    TEXT DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    -- Один прогон цепочки гейтов. Один источник истины «история CI» (независимо от ранов
+    -- MLflow и от artifact_acl.check_detail). Запись делается при старте chain (status=running)
+    -- и обновляется при завершении (status=passed/failed/error + counts + detail).
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,   -- момент создания записи
+    trigger      TEXT NOT NULL CHECK (trigger IN ('artifact','git_push','manual_ui','ci_scheduled')),
+    source       TEXT,                                       -- run_id MLflow / git_sha / 'manual'
+    ref          TEXT,                                       -- git ref / ветка / PR — nullable
+    actor        TEXT NOT NULL,                              -- юзер или 'ci'
+    gate_ids     TEXT,                                       -- CSV выбранных гейтов
+    status       TEXT NOT NULL CHECK (status IN ('running','passed','failed','error')),
+    passed_count INTEGER DEFAULT 0,
+    failed_count INTEGER DEFAULT 0,
+    skipped_count INTEGER DEFAULT 0,
+    duration_ms  INTEGER DEFAULT 0,
+    detail       TEXT,                                       -- JSON: полный результат runner-а
+    started_at   TEXT,
+    finished_at  TEXT
+);
 CREATE TABLE IF NOT EXISTS artifact_acl (
     run_id        TEXT PRIMARY KEY,       -- MLflow run = «сессия разработки» (data+код+модель)
     experiment_id TEXT NOT NULL,
@@ -756,6 +776,97 @@ def unshare_artifact(run_id: str) -> None:
             _sql("UPDATE artifact_acl SET share_status = 'private', share_level = NULL, "
                  "share_roles = NULL, updated_at = CURRENT_TIMESTAMP WHERE run_id = ?"),
             (run_id,))
+
+
+# --- pipeline_runs (история CI: артефакт-чек, git-push, manual) --------------
+def create_pipeline_run(*, trigger: str, source: Optional[str], actor: str,
+                        gate_ids: Optional[list[str]] = None,
+                        ref: Optional[str] = None) -> int:
+    """Создать запись CI-прогона со статусом 'running'. Вернуть id (для последующего finish)."""
+    assert trigger in {"artifact", "git_push", "manual_ui", "ci_scheduled"}, trigger
+    with _tx(commit=True) as cur:
+        cur.execute(
+            _sql("""INSERT INTO pipeline_runs
+                    (trigger, source, ref, actor, gate_ids, status, started_at)
+                    VALUES (?, ?, ?, ?, ?, 'running', CURRENT_TIMESTAMP)"""),
+            (trigger, source, ref, actor, ",".join(gate_ids) if gate_ids else None))
+        if _is_pg():
+            cur.execute("SELECT lastval()")
+        else:
+            cur.execute("SELECT last_insert_rowid()")
+        return int(cur.fetchone()[0])
+
+
+def finish_pipeline_run(run_id: int, *, status: str, detail: Optional[dict] = None,
+                        duration_ms: int = 0) -> None:
+    """Закрыть CI-прогон: status / counts (из detail) / duration / detail-JSON."""
+    assert status in {"passed", "failed", "error"}, status
+    passed = failed = skipped = 0
+    if detail and isinstance(detail.get("gates"), list):
+        for g in detail["gates"]:
+            s = (g.get("status") or "").upper()
+            if s == "PASS":
+                passed += 1
+            elif s == "FAIL":
+                failed += 1
+            elif s == "SKIP":
+                skipped += 1
+    with _tx(commit=True) as cur:
+        cur.execute(
+            _sql("""UPDATE pipeline_runs
+                    SET status = ?, detail = ?, duration_ms = ?,
+                        passed_count = ?, failed_count = ?, skipped_count = ?,
+                        finished_at = CURRENT_TIMESTAMP
+                    WHERE id = ?"""),
+            (status, _json_param(detail), int(duration_ms),
+             passed, failed, skipped, int(run_id)))
+
+
+def _pipeline_row_to_dict(r) -> dict:
+    return {
+        "id": int(r[0]), "ts": r[1], "trigger": r[2], "source": r[3], "ref": r[4],
+        "actor": r[5], "gate_ids": (r[6].split(",") if r[6] else []),
+        "status": r[7],
+        "passed_count": int(r[8] or 0), "failed_count": int(r[9] or 0),
+        "skipped_count": int(r[10] or 0), "duration_ms": int(r[11] or 0),
+        "detail": _json_load(r[12]),
+        "started_at": r[13], "finished_at": r[14],
+    }
+
+
+_PIPELINE_COLS = ("id, ts, trigger, source, ref, actor, gate_ids, status, "
+                  "passed_count, failed_count, skipped_count, duration_ms, detail, "
+                  "started_at, finished_at")
+
+
+def list_pipeline_runs(limit: int = 100, *, trigger: Optional[str] = None,
+                       status: Optional[str] = None) -> list[dict]:
+    """Список CI-прогонов (новые сверху). Опц. фильтры по trigger / status."""
+    where = []
+    params: list = []
+    if trigger:
+        where.append("trigger = ?")
+        params.append(trigger)
+    if status:
+        where.append("status = ?")
+        params.append(status)
+    sql = f"SELECT {_PIPELINE_COLS} FROM pipeline_runs"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += f" ORDER BY id DESC LIMIT {int(limit)}"
+    with _tx() as cur:
+        cur.execute(_sql(sql), tuple(params))
+        rows = cur.fetchall()
+    return [_pipeline_row_to_dict(r) for r in rows]
+
+
+def get_pipeline_run(run_id: int) -> Optional[dict]:
+    """Полная карточка CI-прогона (с detail-JSON) или None."""
+    with _tx() as cur:
+        cur.execute(_sql(f"SELECT {_PIPELINE_COLS} FROM pipeline_runs WHERE id = ?"),
+                    (int(run_id),))
+        r = cur.fetchone()
+    return _pipeline_row_to_dict(r) if r else None
 
 
 # --- демо/самопроверка -------------------------------------------------------

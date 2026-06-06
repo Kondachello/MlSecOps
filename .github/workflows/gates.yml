@@ -1,0 +1,118 @@
+name: MLSecOps Gates
+
+# Запускается:
+#   • на каждый push в main / sasha;
+#   • на каждый PR;
+#   • вручную (workflow_dispatch) — для отладки.
+#
+# Что делает:
+#   1) Чекаутит репо;
+#   2) Прогоняет subset гейтов (DATA, G0) на исходниках через наш runner;
+#   3) Постит результат в /api/v1/pipeline_runs нашего backend-а (см. UI «История CI»).
+#
+# Раннер: self-hosted (см. infra/docker-compose.yml сервис ci-runner). Поднимается ЛОКАЛЬНО
+# в compose, регистрируется в GitHub под токеном из BACKEND_TOKEN/ACCESS_TOKEN env (см. README).
+
+on:
+  push:
+    branches: [main, sasha]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gates:
+    # `self-hosted` — потому что внешние GitHub-раннеры не имеют доступа к нашему
+    # бэкенду по http://backend:8200 (только наш self-hosted в compose видит).
+    runs-on: [self-hosted, mlsecops]
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Run gates inside gates-runner
+        id: gates
+        shell: bash
+        env:
+          # gates-runner монтирует репо как /app — мы кидаем workspace туда и запускаем оттуда.
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          # Используем уже работающий gates-runner контейнер платформы (docker exec).
+          # Если нет — soft-fail и фиксируем error в pipeline_runs.
+          if ! docker ps --format '{{.Names}}' | grep -q '^mlsec-gates-runner$'; then
+            echo "::warning::gates-runner not running — stack must be up via docker compose"
+            echo '{"passed":false,"gates":[],"selected":[]}' > /tmp/gates_result.json
+            echo "rc=2" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          # Скан исходников через --source-dir (новый режим runner-а, без MLflow).
+          # Скоп для push-CI: DATA (если CSV есть) и G0 (секреты).
+          set +e
+          docker exec mlsec-gates-runner python -m gates.runner \
+            --source-dir "$WORKSPACE" --only DATA,G0 \
+            > /tmp/gates_stdout.txt 2>&1
+          rc=$?
+          set -e
+          echo "rc=$rc" >> $GITHUB_OUTPUT
+          # Достаём JSON-блок между маркерами (контракт gates/runner.py).
+          awk '/===GATES_RESULT_BEGIN===/{flag=1;next} /===GATES_RESULT_END===/{flag=0} flag' \
+            /tmp/gates_stdout.txt > /tmp/gates_result.json || true
+          cat /tmp/gates_stdout.txt
+          echo "--- result.json ---"
+          cat /tmp/gates_result.json || echo "(empty)"
+
+      - name: Report to backend (/api/v1/pipeline_runs)
+        if: always()
+        shell: bash
+        env:
+          BACKEND_URL: ${{ secrets.MLSEC_BACKEND_URL || 'http://backend:8200' }}
+          CI_USER: ${{ secrets.MLSEC_CI_USER || 'ci' }}
+          CI_PASS: ${{ secrets.MLSEC_CI_PASS }}
+          GH_SHA: ${{ github.sha }}
+          GH_REF: ${{ github.ref }}
+          RC: ${{ steps.gates.outputs.rc }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CI_PASS:-}" ]; then
+            echo "::warning::MLSEC_CI_PASS secret not set — skip backend report"
+            exit 0
+          fi
+          # Логинимся в backend → получаем JWT.
+          TOKEN=$(curl -fsS -X POST "$BACKEND_URL/api/v1/auth/login" \
+            -H 'Content-Type: application/json' \
+            -d "{\"username\":\"$CI_USER\",\"password\":\"$CI_PASS\"}" \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+          # Статус: pass если rc=0, fail если 1, error иначе.
+          case "${RC}" in
+            0) STATUS=passed ;;
+            1) STATUS=failed ;;
+            *) STATUS=error ;;
+          esac
+          # detail = result.json runner-а (если есть).
+          DETAIL=$(cat /tmp/gates_result.json 2>/dev/null || echo 'null')
+          # Собираем тело POST в python (надёжней чем jq при пустых полях).
+          BODY=$(python3 - <<PY
+          import json
+          detail = $DETAIL
+          print(json.dumps({
+            "trigger": "git_push",
+            "source": "$GH_SHA",
+            "ref": "$GH_REF",
+            "gate_ids": ["DATA", "G0"],
+            "status": "$STATUS",
+            "detail": detail,
+            "duration_ms": int((detail or {}).get("debug", {}).get("duration_ms", 0)) if isinstance(detail, dict) else 0,
+          }))
+          PY
+          )
+          curl -fsS -X POST "$BACKEND_URL/api/v1/pipeline_runs" \
+            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d "$BODY" | tee /tmp/ingest_resp.json
+          echo "Reported to $BACKEND_URL (status=$STATUS, sha=$GH_SHA)"
+
+      - name: Fail job if any gate FAIL
+        if: steps.gates.outputs.rc != '0'
+        run: |
+          echo "::error::Gates returned rc=${{ steps.gates.outputs.rc }} — see logs above."
+          exit 1

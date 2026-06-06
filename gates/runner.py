@@ -161,13 +161,16 @@ def run_chain(run_id: str, *, gate_ids: Optional[list[str]] = None,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="MLSecOps security gates runner")
-    parser.add_argument("--run-id", required=True, help="MLflow run id")
+    src = parser.add_mutually_exclusive_group(required=True)
+    src.add_argument("--run-id", help="MLflow run id (артефакты скачиваются автоматически)")
+    src.add_argument("--source-dir",
+                     help="Папка с источниками (репо, артефакты) — для CI на git-push")
     g = parser.add_mutually_exclusive_group()
     g.add_argument("--only", default="", help="ID гейта или CSV-список (G5 или G5,G7)")
     g.add_argument("--from", dest="from_gate", default="",
                    help="ID гейта, с которого продолжить цепочку до конца")
     parser.add_argument("--work-dir", default="",
-                        help="Не качать артефакты — взять из этой папки")
+                        help="Не качать артефакты — взять из этой папки (для --run-id)")
     args = parser.parse_args()
 
     _ensure_gates_loaded()
@@ -175,8 +178,15 @@ def main() -> int:
     work_dir = Path(args.work_dir) if args.work_dir else None
 
     try:
-        result = run_chain(args.run_id, only=only_list, from_gate=args.from_gate or None,
-                           work_dir=work_dir)
+        if args.source_dir:
+            # Git/repo-mode: source_dir = work_dir; синтетический run_id = sha репо/коммита.
+            synthetic = f"src:{Path(args.source_dir).name}"
+            result = run_chain(synthetic, only=only_list, from_gate=args.from_gate or None,
+                               work_dir=Path(args.source_dir),
+                               run_meta={"owner": "ci", "run_id": synthetic})
+        else:
+            result = run_chain(args.run_id, only=only_list, from_gate=args.from_gate or None,
+                               work_dir=work_dir)
     except ValueError as e:
         print(f"[runner] ERROR: {e}", file=sys.stderr)
         return 2

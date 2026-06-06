@@ -150,16 +150,45 @@ services:
     depends_on: [mlflow, postgres, minio]
     restart: unless-stopped
 
-  # CI: self-hosted GitHub Actions runner (опционально). TODO: образ/токен.
+  # CI: self-hosted GitHub Actions runner. Подключается к нашему GitHub репо и принимает
+  # job'ы из .github/workflows/gates.yml. Шарит сеть с backend/gates-runner → может делать
+  # `docker exec mlsec-gates-runner ...` и POST в backend по имени сервиса.
+  #
+  # Поднимается только профилем `ci` (чтобы по умолчанию не требовать GitHub-токен):
+  #   docker compose --profile ci -f infra/docker-compose.yml up -d ci-runner
+  #
+  # Нужны env:
+  #   GITHUB_REPO     — owner/repo (например, Kondachello/MlSecOps)
+  #   GITHUB_TOKEN    — PAT с правами `repo` И `workflow` (или registration token из
+  #                     Settings → Actions → Runners → New self-hosted runner).
+  #   RUNNER_LABELS   — метки раннера (default: mlsecops). Должны совпадать с
+  #                     `runs-on:` в workflow (gates.yml требует `[self-hosted, mlsecops]`).
   ci-runner:
     image: myoung34/github-runner:latest
-    profiles: ["ci"]            # поднимается только при `docker compose --profile ci up`
+    profiles: ["ci"]
+    container_name: mlsec-ci-runner
+    # ВАЖНО: compose читает .env из своей директории (infra/), а наш .env в корне.
+    # Без env_file переменные GITHUB_TOKEN/GITHUB_RUNNER_TOKEN подставляются как пустые.
+    env_file: [../.env]
     environment:
-      - REPO_URL=https://github.com/${GITHUB_REPO:-org/mlsecopus}
+      - REPO_URL=https://github.com/${GITHUB_REPO:-Kondachello/MlSecOps}
       - RUNNER_NAME=mlsec-local
-      - ACCESS_TOKEN=${GITHUB_TOKEN:-change_me}
+      - RUNNER_SCOPE=repo
+      - LABELS=${RUNNER_LABELS:-mlsecops}
+      # Способ регистрации: либо RUNNER_TOKEN (короткоживущий registration token из GitHub UI,
+      # ~1 час), либо ACCESS_TOKEN (PAT — image сам запросит свежий registration token).
+      # Сейчас используем RUNNER_TOKEN — он уже выписан и в .env. Если истёк — выпиши новый
+      # на GitHub → Settings → Actions → Runners → New self-hosted runner, обнови .env.
+      # Classic PAT с `repo` (постоянный) — image сам через API получает свежий
+      # registration token. Проверено: PAT работает с /actions/runners/registration-token.
+      - ACCESS_TOKEN=${GITHUB_TOKEN:-}
+      # - RUNNER_TOKEN=${GITHUB_RUNNER_TOKEN:-}  # fallback: одноразовый registration token
+      - EPHEMERAL=true                         # одноразовый раннер: после job — рестарт
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock   # для запуска гейт-образов
+      - /var/run/docker.sock:/var/run/docker.sock   # для docker exec gates-runner
+      - ..:/workspace                                # checkout репо для workflow
+    depends_on: [backend, gates-runner]
+    restart: unless-stopped
 
 volumes:
   pgdata:

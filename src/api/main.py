@@ -868,6 +868,73 @@ if app:
         """История событий (Audit Trail, новые сверху)."""
         return {"events": db.list_events(limit)}
 
+    # ─────────────────────── ИСТОРИЯ CI / pipeline_runs ───────────────────────
+    @app.get("/api/v1/pipeline_runs")
+    def pipeline_runs(request: Request, limit: int = 100,
+                      trigger: Optional[str] = None, status: Optional[str] = None):
+        """Список CI-прогонов (новые сверху). RBAC: любой аутентифицированный.
+
+        Фильтры: trigger=artifact|git_push|manual_ui|ci_scheduled, status=running|passed|failed|error.
+        Поле detail в списке усечено — для деталей зови GET /pipeline_runs/{id}.
+        """
+        _current_user(request)
+        rows = db.list_pipeline_runs(limit, trigger=trigger, status=status)
+        # В списке убираем тяжёлый detail-JSON (логи гейтов) — экономим трафик.
+        for r in rows:
+            r.pop("detail", None)
+        return {"pipeline_runs": rows}
+
+    @app.get("/api/v1/pipeline_runs/{run_id}")
+    def pipeline_run_detail(run_id: int, request: Request):
+        """Полная карточка CI-прогона (включая detail = гейты + логи)."""
+        _current_user(request)
+        pr = db.get_pipeline_run(run_id)
+        if pr is None:
+            raise HTTPException(404, "pipeline_run not found")
+        return pr
+
+    class PipelineRunCreate(BaseModel):
+        # Тело POST от внешнего CI-runner-а (GitHub Actions, см. .github/workflows/gates.yml).
+        # Backend сам прогон не делает — только пишет уже готовый результат в журнал.
+        trigger: str = "git_push"
+        source: Optional[str] = None    # git_sha
+        ref: Optional[str] = None       # ветка/PR
+        gate_ids: Optional[list[str]] = None
+        status: str                     # passed|failed|error
+        detail: Optional[dict] = None
+        duration_ms: int = 0
+
+    @app.post("/api/v1/pipeline_runs")
+    def pipeline_run_ingest(req: PipelineRunCreate, request: Request):
+        """Принять готовый результат CI-прогона снаружи (RBAC: MLSecOps или CI-роль).
+
+        Используется CI-раннером (GitHub Actions / self-hosted runner) для записи результата
+        прогона гейтов на репо в нашу историю CI. См. .github/workflows/gates.yml.
+        """
+        try:
+            actor = identity.current_user(request)
+        except identity.AuthError as e:
+            raise HTTPException(401, str(e))
+        roles = identity.get_roles(actor)
+        # Пока CI-роли нет — пускаем MLSecOps и спец-юзера 'ci'. Расширишь добавив роль 'CI'.
+        if "MLSecOps" not in roles and actor != "ci":
+            db.log_event(actor, sorted(roles)[0] if roles else "none", "access_denied",
+                         result="blocked", reason="pipeline_run ingest requires MLSecOps/ci")
+            raise HTTPException(403, "ingest pipeline_run requires MLSecOps or CI role")
+        if req.status not in ("passed", "failed", "error"):
+            raise HTTPException(400, f"bad status {req.status}")
+        pr_id = db.create_pipeline_run(trigger=req.trigger, source=req.source,
+                                       actor=actor, gate_ids=req.gate_ids, ref=req.ref)
+        db.finish_pipeline_run(pr_id, status=req.status, detail=req.detail,
+                               duration_ms=req.duration_ms)
+        db.log_event(actor, "MLSecOps" if "MLSecOps" in roles else "ci",
+                     "ci_pipeline_recorded", asset=req.source or str(pr_id),
+                     result="ok" if req.status == "passed" else "blocked",
+                     reason=f"trigger={req.trigger} ref={req.ref}",
+                     details={"pipeline_run_id": pr_id, "status": req.status,
+                              "gate_ids": req.gate_ids})
+        return {"id": pr_id, "status": req.status}
+
     @app.get("/api/v1/events/verify_chain")
     def events_verify_chain():
         """Проверить целостность hash-chain Audit Trail → {ok, broken_at, count} (угроза #24)."""
