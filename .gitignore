@@ -26,3 +26,6 @@ mlruns/
 *.db-shm
 mlsec_mlflow.db
 mlartifacts/
+logs/
+.run/
+*_diag.py

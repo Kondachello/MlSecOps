@@ -1,4 +1,32 @@
-# Secure MLOps Platform (MLSecOps)
+# Платформа безопасного MLOps (MLSecOps)
+
+> Сквозная платформа безопасной доставки ML-моделей: гейты G0–G7 в CI/CD, неизменяемые артефакты, hash-chained аудит и ручное подтверждение критичных релизов. Проект программы Альфа-Банк × «Сириус», 2026.
+
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-Gatekeeper-009688?logo=fastapi&logoColor=white)
+![MLflow](https://img.shields.io/badge/MLflow-реестр-0194E2?logo=mlflow&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-изоляция-2496ED?logo=docker&logoColor=white)
+
+## Что реализовано
+
+- реестр моделей и датасетов поверх MLflow с единым Gatekeeper API;
+- security gates G0–G7: секреты, зависимости, код, данные, модель, образ и подпись;
+- WORM-хранение продакшен-артефактов и контролируемая blue-green замена;
+- аудит событий с hash-chain и привязкой к серверной идентичности пользователя;
+- HITL-проверка для критичных моделей и внешних весов;
+- демонстрационные сценарии безопасного и вредоносного обучения.
+
+```mermaid
+flowchart LR
+    A[Код и данные] --> B[GitHub Actions]
+    B --> C[G0–G7<br/>security gates]
+    C -->|пройдено| D[Gatekeeper API]
+    D --> E[MLflow Registry]
+    D --> F[MinIO / WORM]
+    D --> G[Hash-chained Audit]
+    E --> H[Прод-инференс]
+    I[HITL] --> D
+```
 
 Платформа управления безопасностью ML поверх MLOps: реестр моделей и датасетов,
 единая неподделываемая история событий, Security Gates (G0–G7) в CI/CD,
@@ -56,3 +84,9 @@ docker compose -f infra/docker-compose.yml up --build
 ```
 
 Демо-сценарии — [docs/16_DEMO_SCENARIOS.md](docs/16_DEMO_SCENARIOS.md).
+
+Локальные базы, журналы событий, PID-файлы и диагностические выгрузки не хранятся в Git и создаются при запуске.
+
+## Лицензия
+
+MIT — см. [`LICENSE`](LICENSE).
